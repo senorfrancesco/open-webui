@@ -302,8 +302,21 @@ async def update_audio_config(request: Request, form_data: AudioConfigUpdateForm
 
 
 def load_speech_pipeline(request):
-    from transformers import pipeline
-    from datasets import load_dataset
+    try:
+        from transformers import pipeline
+    except ImportError as exc:
+        raise ImportError(
+            "Transformers TTS requires the 'transformers' package. "
+            'Install it with: pip install transformers'
+        ) from exc
+
+    try:
+        from datasets import load_dataset
+    except ImportError as exc:
+        raise ImportError(
+            "Transformers TTS requires the 'datasets' package. "
+            'Install it with: pip install datasets'
+        ) from exc
 
     if request.app.state.speech_synthesiser is None:
         request.app.state.speech_synthesiser = pipeline('text-to-speech', 'microsoft/speecht5_tts')
