@@ -80,6 +80,7 @@ from open_webui.routers import (
     auths,
     channels,
     chats,
+    deep_jobs,
     notes,
     folders,
     configs,
@@ -1503,6 +1504,7 @@ app.include_router(users.router, prefix='/api/v1/users', tags=['users'])
 
 app.include_router(channels.router, prefix='/api/v1/channels', tags=['channels'])
 app.include_router(chats.router, prefix='/api/v1/chats', tags=['chats'])
+app.include_router(deep_jobs.router, prefix='/api/v1', tags=['deep-jobs'])
 app.include_router(notes.router, prefix='/api/v1/notes', tags=['notes'])
 
 

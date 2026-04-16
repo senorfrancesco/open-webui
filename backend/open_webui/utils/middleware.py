@@ -218,6 +218,96 @@ def _split_tool_calls(
     return expanded
 
 
+def build_deep_job_output_item(
+    tool_function_name: str,
+    tool_call_id: str,
+    tool_result,
+) -> dict | None:
+    payload = tool_result
+
+    if isinstance(payload, str):
+        stripped_payload = payload.strip()
+        if not stripped_payload:
+            return None
+        if stripped_payload[0] in '{[':
+            try:
+                payload = json.loads(stripped_payload)
+            except json.JSONDecodeError:
+                return None
+        else:
+            extracted_payload: dict[str, str] = {}
+            summary_line = ''
+            for raw_line in stripped_payload.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                lower_line = line.lower()
+                if lower_line.startswith('job_id:'):
+                    extracted_payload['job_id'] = line.split(':', 1)[1].strip()
+                    continue
+                if lower_line.startswith('status_url:'):
+                    extracted_payload['status_url'] = line.split(':', 1)[1].strip()
+                    continue
+                if lower_line.startswith('status_text:'):
+                    extracted_payload['status_text'] = line.split(':', 1)[1].strip()
+                    continue
+                if lower_line.startswith('result_message_id:'):
+                    extracted_payload['result_message_id'] = line.split(':', 1)[1].strip()
+                    continue
+                if not summary_line:
+                    summary_line = line
+
+            if 'job_id' not in extracted_payload:
+                return None
+
+            extracted_payload.setdefault('status', 'accepted')
+            if summary_line:
+                extracted_payload.setdefault('status_text', summary_line)
+            payload = extracted_payload
+
+    if not isinstance(payload, dict):
+        return None
+
+    job_id = str(payload.get('job_id') or '').strip()
+    if not job_id:
+        return None
+
+    status = str(payload.get('status') or '').strip().lower()
+    status_url = str(payload.get('status_url') or '').strip()
+    job_status = str(payload.get('job_status') or status or '').strip().lower()
+
+    if status != 'accepted' and not status_url:
+        return None
+
+    if job_status == 'accepted' or not job_status:
+        job_status = 'queued'
+
+    if job_status == 'cancelling':
+        job_status = 'running'
+
+    if job_status not in {'queued', 'running', 'completed', 'failed', 'cancelled'}:
+        job_status = 'queued'
+
+    summary = str(
+        payload.get('status_text')
+        or payload.get('result_preview')
+        or payload.get('assistant_message')
+        or f'{tool_function_name}: long-running job accepted.'
+    ).strip()
+
+    result_message_id = str(payload.get('result_message_id') or '').strip() or None
+
+    return {
+        'type': 'open_webui:deep_job',
+        'tool_call_id': tool_call_id,
+        'job_id': job_id,
+        'title': 'Deep job',
+        'summary': summary,
+        'state': job_status,
+        'result_message_id': result_message_id,
+    }
+
+
 def get_citation_source_from_tool_result(
     tool_name: str, tool_params: dict, tool_result: str, tool_id: str = ''
 ) -> list[dict]:
@@ -410,9 +500,12 @@ def serialize_output(output: list) -> str:
 
     # First pass: collect function_call_output items by call_id for lookup
     tool_outputs = {}
+    hidden_tool_call_ids = set()
     for item in output:
         if item.get('type') == 'function_call_output':
             tool_outputs[item.get('call_id')] = item
+        elif item.get('type') == 'open_webui:deep_job' and item.get('tool_call_id'):
+            hidden_tool_call_ids.add(item.get('tool_call_id'))
 
     # Second pass: render items in order
     for idx, item in enumerate(output):
@@ -427,10 +520,13 @@ def serialize_output(output: list) -> str:
 
         elif item_type == 'function_call':
             # Render tool call inline with its result (if available)
+            call_id = item.get('call_id', '')
+            if call_id in hidden_tool_call_ids:
+                continue
+
             if content and not content.endswith('\n'):
                 content += '\n'
 
-            call_id = item.get('call_id', '')
             name = item.get('name', '')
             arguments = item.get('arguments', '')
 
@@ -484,6 +580,31 @@ def serialize_output(output: list) -> str:
                 content = f'{content}<details type="reasoning" done="true" duration="{duration or 0}">\n<summary>Thought for {duration or 0} seconds</summary>\n{display}\n</details>\n'
             else:
                 content = f'{content}<details type="reasoning" done="false">\n<summary>Thinking…</summary>\n{display}\n</details>\n'
+
+        elif item_type == 'open_webui:deep_job':
+            if content and not content.endswith('\n'):
+                content += '\n'
+
+            title = str(item.get('title') or 'Deep job').strip() or 'Deep job'
+            summary = str(item.get('summary') or title).strip() or title
+            state = str(item.get('state') or 'queued').strip() or 'queued'
+            job_id = str(item.get('job_id') or '').strip()
+            result_message_id = str(item.get('result_message_id') or '').strip()
+            done = 'true' if state in ('completed', 'failed', 'cancelled') else 'false'
+
+            attrs = [
+                'type="deep_job"',
+                f'state="{html.escape(state)}"',
+                f'done="{done}"',
+                f'title="{html.escape(title)}"',
+            ]
+            if job_id:
+                attrs.append(f'job_id="{html.escape(job_id)}"')
+            if result_message_id:
+                attrs.append(f'result_message_id="{html.escape(result_message_id)}"')
+
+            attrs_text = ' '.join(attrs)
+            content += f'<details {attrs_text}>\n<summary>{html.escape(summary)}</summary>\n</details>\n'
 
         elif item_type == 'open_webui:code_interpreter':
             content_stripped, original_whitespace = split_content_and_whitespace(content)
@@ -4220,6 +4341,11 @@ async def streaming_chat_response_handler(response, ctx):
                             {
                                 'tool_call_id': tool_call_id,
                                 'content': str(tool_result) if tool_result else '',
+                                'deep_job': build_deep_job_output_item(
+                                    tool_function_name=tool_function_name,
+                                    tool_call_id=tool_call_id,
+                                    tool_result=tool_result,
+                                ),
                                 **({'files': tool_result_files} if tool_result_files else {}),
                                 **({'embeds': tool_result_embeds} if tool_result_embeds else {}),
                             }
@@ -4261,6 +4387,18 @@ async def streaming_chat_response_handler(response, ctx):
                                 **({'embeds': result.get('embeds')} if result.get('embeds') else {}),
                             }
                         )
+
+                        deep_job_output_item = result.get('deep_job')
+                        if deep_job_output_item:
+                            output = [
+                                item
+                                for item in output
+                                if not (
+                                    item.get('type') == 'open_webui:deep_job'
+                                    and item.get('job_id') == deep_job_output_item.get('job_id')
+                                )
+                            ]
+                            output.append(deep_job_output_item)
 
                     # Append a new empty message item for the next response
                     output.append(
