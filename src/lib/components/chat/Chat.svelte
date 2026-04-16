@@ -92,6 +92,15 @@
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { getFunctions } from '$lib/apis/functions';
 	import { updateFolderById } from '$lib/apis/folders';
+	import {
+		cancelDeepJob,
+		getActiveDeepJob,
+		getDeepJob,
+		getDeepJobResult,
+		recordDeepJobDelivery,
+		type DeepJobResultPayload,
+		type DeepJobSnapshot
+	} from '$lib/apis/deep_jobs';
 
 	import Banner from '../common/Banner.svelte';
 	import MessageInput from '$lib/components/chat/MessageInput.svelte';
@@ -165,6 +174,9 @@
 	};
 
 	let taskIds = null;
+	let activeDeepJob: DeepJobSnapshot | null = null;
+	let activeDeepJobPollTimer: number | null = null;
+	let deepJobTerminalSyncs = new Map<string, Promise<DeepJobSnapshot>>();
 
 	// Chat Input
 	let prompt = '';
@@ -176,8 +188,520 @@
 		navigateHandler();
 	}
 
+	const isDeepJobActive = (job: DeepJobSnapshot | null) => {
+		return !!job && !['completed', 'failed', 'cancelled'].includes(job.state);
+	};
+
+	const isDeepJobTerminal = (job: DeepJobSnapshot | null) => {
+		return !!job && ['completed', 'failed', 'cancelled'].includes(job.state);
+	};
+
+	const getDeepJobAnchorOutputItem = (message, jobId: string | null = null) => {
+		const outputItems = Array.isArray(message?.output) ? message.output : [];
+		return (
+			outputItems.find(
+				(item) =>
+					item?.type === 'open_webui:deep_job' && (!jobId || item?.job_id === jobId)
+			) ?? null
+		);
+	};
+
+	const listDeepJobAnchors = () => {
+		return Object.values(history.messages)
+			.map((message) => ({
+				message,
+				anchor: getDeepJobAnchorOutputItem(message)
+			}))
+			.filter((entry) => !!entry.anchor)
+			.sort((left, right) => (right.message?.timestamp ?? 0) - (left.message?.timestamp ?? 0));
+	};
+
+	const findDeepJobAnchorMessage = (jobId: string) => {
+		return listDeepJobAnchors().find((entry) => entry.anchor?.job_id === jobId) ?? null;
+	};
+
+	const findLatestPendingDeepJobAnchorMessage = () => {
+		return listDeepJobAnchors().find((entry) => !entry.anchor?.result_message_id) ?? null;
+	};
+
+	const findDeepJobResultMessage = (
+		anchorMessageId: string,
+		jobId: string,
+		resultMessageId: string | null = null
+	) => {
+		return (
+			Object.values(history.messages).find((message) => {
+				if (!message || message.role !== 'assistant') {
+					return false;
+				}
+
+				if (resultMessageId && message.id === resultMessageId) {
+					return true;
+				}
+
+				return (
+					message.parentId === anchorMessageId ||
+					message.tool_job_result_for === anchorMessageId ||
+					message.job_id === jobId
+				);
+			}) ?? null
+		);
+	};
+
+	const restoreDeepJobResultCurrentId = () => {
+		if (!history?.currentId || !history?.messages) {
+			return false;
+		}
+
+		const currentMessage = history.messages[history.currentId];
+		if (!currentMessage) {
+			return false;
+		}
+
+		const currentAnchor = getDeepJobAnchorOutputItem(currentMessage);
+		const preferredResultMessageId =
+			currentAnchor?.result_message_id ??
+			currentMessage?.result_message_id ??
+			null;
+		const fallbackResultMessage = findDeepJobResultMessage(
+			currentMessage.id,
+			currentAnchor?.job_id ?? currentMessage?.job_id ?? '',
+			null
+		);
+		const resultMessageId =
+			(preferredResultMessageId && history.messages[preferredResultMessageId]
+				? preferredResultMessageId
+				: null) ??
+			fallbackResultMessage?.id ??
+			null;
+
+		if (!resultMessageId || !history.messages[resultMessageId]) {
+			return false;
+		}
+
+		if (history.currentId === resultMessageId) {
+			return false;
+		}
+
+		history.currentId = resultMessageId;
+		return true;
+	};
+
+	const updateDeepJobAnchorOutputItems = (
+		message,
+		snapshot: DeepJobSnapshot,
+		resultMessageId: string | null
+	) => {
+		const outputItems = Array.isArray(message?.output) ? message.output : [];
+		let changed = false;
+
+		const nextOutput = outputItems.map((item) => {
+			if (item?.type !== 'open_webui:deep_job' || item?.job_id !== snapshot.job_id) {
+				return item;
+			}
+
+			const nextItem = {
+				...item,
+				state: snapshot.state ?? item.state ?? 'queued',
+				summary: snapshot.summary ?? item.summary ?? item.title ?? 'Deep job',
+				result_message_id: resultMessageId ?? item.result_message_id ?? null
+			};
+
+			if (
+				nextItem.state !== item.state ||
+				nextItem.summary !== item.summary ||
+				nextItem.result_message_id !== (item.result_message_id ?? null)
+			) {
+				changed = true;
+			}
+
+			return nextItem;
+		});
+
+		return {
+			changed,
+			output: changed ? nextOutput : outputItems
+		};
+	};
+
+	const buildDeepJobAnchorContent = (
+		message,
+		snapshot: DeepJobSnapshot,
+		resultMessageId: string | null
+	) => {
+		const outputItems = Array.isArray(message?.output) ? message.output : [];
+		const anchorItem =
+			outputItems.find(
+				(item) => item?.type === 'open_webui:deep_job' && item?.job_id === snapshot.job_id
+			) ?? null;
+
+		if (!anchorItem) {
+			return typeof message?.content === 'string' ? message.content : '';
+		}
+
+		const title = `${anchorItem?.title ?? 'Deep job'}`.trim() || 'Deep job';
+		const summary = `${
+			snapshot.summary ?? anchorItem?.summary ?? anchorItem?.title ?? 'Deep job'
+		}`.trim() || title;
+		const state = `${snapshot.state ?? anchorItem?.state ?? 'queued'}`.trim() || 'queued';
+		const done = ['completed', 'failed', 'cancelled'].includes(state) ? 'true' : 'false';
+
+		const attrs = [
+			'type="deep_job"',
+			`state="${state}"`,
+			`done="${done}"`,
+			`title="${title.replaceAll('"', '&quot;')}"`
+		];
+
+		if (snapshot.job_id) {
+			attrs.push(`job_id="${snapshot.job_id.replaceAll('"', '&quot;')}"`);
+		}
+
+		const resolvedResultMessageId = resultMessageId ?? anchorItem?.result_message_id ?? null;
+		if (resolvedResultMessageId) {
+			attrs.push(`result_message_id="${resolvedResultMessageId.replaceAll('"', '&quot;')}"`);
+		}
+
+		const detailsBlock = `<details ${attrs.join(' ')}>\n<summary>${summary.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</summary>\n</details>`;
+		const currentContent = typeof message?.content === 'string' ? message.content : '';
+		const withoutToolCallDetails = currentContent.replace(
+			/<details[^>]*type="tool_calls"[\s\S]*?<\/details>\s*/gi,
+			''
+		);
+		const withoutAnyDeepJobDetails = withoutToolCallDetails.replace(
+			/<details[^>]*type="deep_job"[\s\S]*?<\/details>\s*/gi,
+			''
+		);
+		const trailingContent = withoutAnyDeepJobDetails.trim();
+
+		return trailingContent ? `${detailsBlock}\n${trailingContent}` : detailsBlock;
+	};
+
+	const reconcileDeepJobAnchorMessage = (
+		snapshot: DeepJobSnapshot,
+		resultMessageId: string | null = snapshot.result_message_id ?? null
+	) => {
+		const anchorEntry = findDeepJobAnchorMessage(snapshot.job_id);
+		if (!anchorEntry) {
+			return false;
+		}
+
+		const anchorMessage = anchorEntry.message;
+		const { changed: outputChanged, output } = updateDeepJobAnchorOutputItems(
+			anchorMessage,
+			snapshot,
+			resultMessageId
+		);
+		const nextContent = buildDeepJobAnchorContent(
+			{ ...anchorMessage, output },
+			snapshot,
+			resultMessageId
+		);
+		const contentChanged = nextContent !== (anchorMessage.content ?? '');
+		const resultMessageChanged =
+			(anchorMessage.result_message_id ?? null) !== (resultMessageId ?? null);
+
+		if (!outputChanged && !contentChanged && !resultMessageChanged) {
+			return false;
+		}
+
+		history.messages[anchorMessage.id] = {
+			...anchorMessage,
+			output,
+			content: nextContent,
+			result_message_id: resultMessageId ?? null
+		};
+
+		return true;
+	};
+
+	const getDeepJobSnapshotFromOutput = (outputItems) => {
+		const anchorItem =
+			(Array.isArray(outputItems) ? outputItems : []).find(
+				(item) => item?.type === 'open_webui:deep_job' && item?.job_id
+			) ?? null;
+
+		if (!anchorItem?.job_id) {
+			return null;
+		}
+
+		return {
+			job_id: anchorItem.job_id,
+			chat_id: $chatId ?? null,
+			state: anchorItem.state ?? 'queued',
+			phase: null,
+			summary: anchorItem.summary ?? anchorItem.title ?? 'Deep job',
+			progress: null,
+			steps: [],
+			cancel_requested: false,
+			result_message_id: anchorItem.result_message_id ?? null,
+			error: null,
+			updated_at: null
+		} satisfies DeepJobSnapshot;
+	};
+
+	const buildDeepJobResultMessage = (
+		resultMessageId: string,
+		anchorMessage,
+		snapshot: DeepJobSnapshot,
+		resultPayload: DeepJobResultPayload
+	) => {
+		const buildDeepJobResultDownloadUrl = () => {
+			if (!snapshot?.job_id || !Array.isArray(resultPayload.artifacts)) {
+				return null;
+			}
+
+			const reportArtifact = resultPayload.artifacts.find((artifact) => {
+				if (!artifact || typeof artifact !== 'object') {
+					return false;
+				}
+
+				const artifactType = String(artifact.artifact_type ?? '');
+				const artifactId = String(artifact.artifact_id ?? '');
+				const artifactUrl = String(artifact.url ?? '');
+				const metadata =
+					artifact.metadata && typeof artifact.metadata === 'object' ? artifact.metadata : {};
+				const artifactFormat = String(metadata.format ?? '').toLowerCase();
+				return (
+					artifactType === 'report' &&
+					Boolean(artifactId) &&
+					(artifactFormat === 'pdf' || artifactUrl.toLowerCase().endsWith('.pdf'))
+				);
+			}) as Record<string, any> | undefined;
+
+			if (!reportArtifact?.artifact_id) {
+				return null;
+			}
+
+			return `${WEBUI_API_BASE_URL}/deep-jobs/${encodeURIComponent(snapshot.job_id)}/artifacts/${encodeURIComponent(String(reportArtifact.artifact_id))}/download`;
+		};
+
+		const resultDownloadUrl = buildDeepJobResultDownloadUrl();
+		const baseContent =
+			resultPayload.assistant_message || JSON.stringify(resultPayload, null, 2);
+		const content =
+			resultDownloadUrl && !baseContent.includes('[Скачать отчёт]')
+				? `${baseContent}\n\n[Скачать отчёт](${resultDownloadUrl})`
+				: baseContent;
+
+		const resultMessage: Record<string, any> = {
+			id: resultMessageId,
+			parentId: anchorMessage.id,
+			childrenIds: [],
+			role: 'assistant',
+			content,
+			model: anchorMessage.model ?? selectedModels[0] ?? '__DEFAULT_MODEL__',
+			modelName:
+				anchorMessage.modelName ?? anchorMessage.model ?? selectedModels[0] ?? '__DEFAULT_MODEL__',
+			modelIdx: anchorMessage.modelIdx ?? 0,
+			timestamp: Math.floor(Date.now() / 1000),
+			done: true,
+			job_id: snapshot.job_id,
+			tool_job_result_for: anchorMessage.id
+		};
+
+		if (resultPayload.sources?.length) {
+			resultMessage.sources = resultPayload.sources;
+		}
+
+		if (resultPayload.embeds?.length) {
+			resultMessage.embeds = resultPayload.embeds;
+		}
+
+		return resultMessage;
+	};
+
+	const materializeDeepJobTerminalResult = async (snapshot: DeepJobSnapshot) => {
+		if (!snapshot?.job_id || !localStorage.token || !isDeepJobTerminal(snapshot)) {
+			return snapshot;
+		}
+
+		if (snapshot.state === 'cancelled') {
+			const anchorChanged = reconcileDeepJobAnchorMessage(snapshot, null);
+			if (anchorChanged && $chatId) {
+				await saveChatHandler($chatId, history);
+			}
+			return {
+				...snapshot,
+				result_message_id: null
+			};
+		}
+
+		const existingSync = deepJobTerminalSyncs.get(snapshot.job_id);
+		if (existingSync) {
+			return await existingSync;
+		}
+
+		const syncPromise = (async () => {
+			const anchorEntry =
+				findDeepJobAnchorMessage(snapshot.job_id) ?? findLatestPendingDeepJobAnchorMessage();
+			if (!anchorEntry || anchorEntry.anchor?.job_id !== snapshot.job_id) {
+				return snapshot;
+			}
+
+			const anchorMessage = anchorEntry.message;
+			const existingResultMessage = findDeepJobResultMessage(
+				anchorMessage.id,
+				snapshot.job_id,
+				snapshot.result_message_id ?? anchorEntry.anchor?.result_message_id ?? null
+			);
+
+			let resolvedSnapshot = snapshot;
+			let resultMessageId =
+				existingResultMessage?.id ??
+				snapshot.result_message_id ??
+				anchorEntry.anchor?.result_message_id ??
+				null;
+
+			if (!existingResultMessage) {
+				const resultPayload = await getDeepJobResult(localStorage.token, snapshot.job_id).catch(
+					(error) => {
+						console.error('Failed to fetch deep-job result payload:', error);
+						return null;
+					}
+				);
+
+				if (!resultPayload) {
+					return snapshot;
+				}
+
+				resultMessageId = resultMessageId ?? uuidv4();
+				history.messages[resultMessageId] = buildDeepJobResultMessage(
+					resultMessageId,
+					anchorMessage,
+					snapshot,
+					resultPayload
+				);
+			}
+
+			if (!resultMessageId) {
+				return resolvedSnapshot;
+			}
+
+			const childrenIds = Array.isArray(anchorMessage.childrenIds)
+				? [...anchorMessage.childrenIds]
+				: [];
+			if (!childrenIds.includes(resultMessageId)) {
+				childrenIds.push(resultMessageId);
+			}
+
+			if (!snapshot.result_message_id) {
+				const deliverySnapshot = await recordDeepJobDelivery(
+					localStorage.token,
+					snapshot.job_id,
+					resultMessageId,
+					new Date().toISOString()
+				).catch((error) => {
+					console.error('Failed to record deep-job delivery:', error);
+					return null;
+				});
+
+				if (deliverySnapshot) {
+					resolvedSnapshot = deliverySnapshot;
+				}
+			}
+
+			const anchorChanged = reconcileDeepJobAnchorMessage(resolvedSnapshot, resultMessageId);
+			const nextAnchorMessage = history.messages[anchorMessage.id];
+			const anchorNeedsUpdate =
+				anchorChanged ||
+				nextAnchorMessage?.result_message_id !== resultMessageId ||
+				childrenIds.length !== (nextAnchorMessage?.childrenIds?.length ?? 0);
+
+			if (anchorNeedsUpdate) {
+				history.messages[anchorMessage.id] = {
+					...nextAnchorMessage,
+					childrenIds,
+					result_message_id: resultMessageId
+				};
+			}
+
+			history.currentId = resultMessageId;
+			await saveChatHandler($chatId, history);
+			return {
+				...resolvedSnapshot,
+				result_message_id: resultMessageId
+			};
+		})();
+
+		deepJobTerminalSyncs.set(snapshot.job_id, syncPromise);
+		try {
+			return await syncPromise;
+		} finally {
+			deepJobTerminalSyncs.delete(snapshot.job_id);
+		}
+	};
+
+	const clearActiveDeepJobPollTimer = () => {
+		if (activeDeepJobPollTimer !== null) {
+			window.clearTimeout(activeDeepJobPollTimer);
+			activeDeepJobPollTimer = null;
+		}
+	};
+
+	const syncActiveDeepJob = async (_chatId = $chatId) => {
+		clearActiveDeepJobPollTimer();
+
+		if (!_chatId || !localStorage.token) {
+			activeDeepJob = null;
+			return null;
+		}
+
+		const previousActiveJobId = activeDeepJob?.job_id ?? null;
+
+		const activeJobResponse = await getActiveDeepJob(localStorage.token, _chatId).catch((error) => {
+			console.error('Failed to sync active deep job:', error);
+			return null;
+		});
+
+		let resolvedJob = activeJobResponse ?? null;
+
+		if (!resolvedJob) {
+			const fallbackAnchor =
+				(previousActiveJobId ? findDeepJobAnchorMessage(previousActiveJobId) : null) ??
+				findLatestPendingDeepJobAnchorMessage();
+			const fallbackJobId = previousActiveJobId ?? fallbackAnchor?.anchor?.job_id ?? null;
+
+			if (fallbackJobId) {
+				resolvedJob = await getDeepJob(localStorage.token, fallbackJobId).catch((error) => {
+					console.error('Failed to load fallback deep job snapshot:', error);
+					return null;
+				});
+			}
+		}
+
+		if (resolvedJob && isDeepJobTerminal(resolvedJob)) {
+			resolvedJob = await materializeDeepJobTerminalResult(resolvedJob);
+		} else if (resolvedJob) {
+			reconcileDeepJobAnchorMessage(resolvedJob, resolvedJob.result_message_id ?? null);
+		}
+
+		activeDeepJob = isDeepJobActive(resolvedJob) ? resolvedJob : null;
+
+		if (isDeepJobActive(activeDeepJob)) {
+			scheduleActiveDeepJobSync(document.hidden ? 5000 : 2000);
+		}
+
+		return activeDeepJob;
+	};
+
+	const scheduleActiveDeepJobSync = (delay = 150) => {
+		clearActiveDeepJobPollTimer();
+
+		const targetChatId = $chatId || chatIdProp;
+		if (!targetChatId) {
+			return;
+		}
+
+		activeDeepJobPollTimer = window.setTimeout(() => {
+			void syncActiveDeepJob(targetChatId);
+		}, delay);
+	};
+
 	const navigateHandler = async () => {
 		loading = true;
+		activeDeepJob = null;
+		clearActiveDeepJobPollTimer();
 
 		prompt = '';
 		messageInput?.setText('');
@@ -439,7 +963,9 @@
 						for (const messageId of history.messages[message.parentId].childrenIds) {
 							history.messages[messageId].done = true;
 						}
-						await processNextInQueue($chatId);
+						if (!isDeepJobActive(activeDeepJob)) {
+							await processNextInQueue($chatId);
+						}
 					} else {
 						message.done = true;
 					}
@@ -557,6 +1083,7 @@
 				}
 
 				history.messages[event.message_id] = message;
+				scheduleActiveDeepJobSync();
 			}
 		} else {
 			// Non-active chat completion: queue stays in the global store.
@@ -762,11 +1289,23 @@
 		};
 		init();
 
+		const syncActiveDeepJobState = () => {
+			if ($chatId || chatIdProp) {
+				void syncActiveDeepJob($chatId || chatIdProp);
+			}
+		};
+
+		window.addEventListener('focus', syncActiveDeepJobState);
+		document.addEventListener('visibilitychange', syncActiveDeepJobState);
+
 		return () => {
 			try {
+				clearActiveDeepJobPollTimer();
 				pageSubscribe();
 				showControlsSubscribe();
 				selectedFolderSubscribe();
+				window.removeEventListener('focus', syncActiveDeepJobState);
+				document.removeEventListener('visibilitychange', syncActiveDeepJobState);
 				window.removeEventListener('message', onMessageHandler);
 				$socket?.off('events', chatEventHandler);
 				audioQueueInstance?.destroy();
@@ -1287,6 +1826,9 @@
 					taskIds = taskRes.task_ids;
 				}
 
+				await syncActiveDeepJob($chatId);
+				restoreDeepJobResultCurrentId();
+
 				await tick();
 
 				return true;
@@ -1363,13 +1905,25 @@
 			for (const message of res.messages) {
 				if (message?.id) {
 					// Add null check for message and message.id
-					history.messages[message.id] = {
+					const mergedMessage = {
 						...history.messages[message.id],
 						...(history.messages[message.id].content !== message.content
 							? { originalContent: history.messages[message.id].content }
 							: {}),
 						...message
 					};
+
+					const deepJobSnapshot = getDeepJobSnapshotFromOutput(mergedMessage.output);
+					if (deepJobSnapshot) {
+						mergedMessage.result_message_id = deepJobSnapshot.result_message_id ?? null;
+						mergedMessage.content = buildDeepJobAnchorContent(
+							mergedMessage,
+							deepJobSnapshot,
+							deepJobSnapshot.result_message_id ?? null
+						);
+					}
+
+					history.messages[message.id] = mergedMessage;
 				}
 			}
 		}
@@ -1421,13 +1975,25 @@
 		if (res !== null && res.messages) {
 			// Update chat history with the new messages
 			for (const message of res.messages) {
-				history.messages[message.id] = {
+				const mergedMessage = {
 					...history.messages[message.id],
 					...(history.messages[message.id].content !== message.content
 						? { originalContent: history.messages[message.id].content }
 						: {}),
 					...message
 				};
+
+				const deepJobSnapshot = getDeepJobSnapshotFromOutput(mergedMessage.output);
+				if (deepJobSnapshot) {
+					mergedMessage.result_message_id = deepJobSnapshot.result_message_id ?? null;
+					mergedMessage.content = buildDeepJobAnchorContent(
+						mergedMessage,
+						deepJobSnapshot,
+						deepJobSnapshot.result_message_id ?? null
+					);
+				}
+
+				history.messages[message.id] = mergedMessage;
 			}
 		}
 
@@ -1677,6 +2243,16 @@
 					);
 				}
 			}
+		}
+
+		const deepJobSnapshot = getDeepJobSnapshotFromOutput(message.output);
+		if (deepJobSnapshot) {
+			message.result_message_id = deepJobSnapshot.result_message_id ?? null;
+			message.content = buildDeepJobAnchorContent(
+				message,
+				deepJobSnapshot,
+				deepJobSnapshot.result_message_id ?? null
+			);
 		}
 
 		if (selected_model_id) {
@@ -2378,6 +2954,21 @@
 	};
 
 	const stopResponse = async () => {
+		if (isDeepJobActive(activeDeepJob)) {
+			const cancelledDeepJob = await cancelDeepJob(localStorage.token, activeDeepJob.job_id).catch(
+				(error) => {
+					toast.error(`${error}`);
+					return null;
+				}
+			);
+
+			if (cancelledDeepJob) {
+				activeDeepJob = cancelledDeepJob;
+			}
+
+			scheduleActiveDeepJobSync(250);
+		}
+
 		if (taskIds) {
 			for (const taskId of taskIds) {
 				const res = await stopTask(localStorage.token, taskId).catch((error) => {
@@ -2409,7 +3000,9 @@
 			generationController = null;
 		}
 
-		await processNextInQueue($chatId);
+		if (!isDeepJobActive(activeDeepJob)) {
+			await processNextInQueue($chatId);
+		}
 	};
 
 	const submitMessage = async (parentId, prompt) => {
@@ -2859,6 +3452,7 @@
 									bind:dragged
 									toolServers={$toolServers}
 									{generating}
+									deepJobBusy={isDeepJobActive(activeDeepJob)}
 									{stopResponse}
 									{createMessagePair}
 									{onUpload}

@@ -18,6 +18,7 @@
 	import AlertRenderer, { alertComponent } from './AlertRenderer.svelte';
 	import Collapsible from '$lib/components/common/Collapsible.svelte';
 	import ToolCallDisplay from '$lib/components/common/ToolCallDisplay.svelte';
+	import DeepJobDisplay from '$lib/components/chat/Messages/DeepJobDisplay.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Download from '$lib/components/icons/Download.svelte';
 	import ConsecutiveDetailsGroup from './ConsecutiveDetailsGroup.svelte';
@@ -423,7 +424,15 @@
 	{:else if token.type === 'details'}
 		{@const textContent = getDetailTextContent(token)}
 
-		{#if token?.attributes?.type === 'tool_calls'}
+		{#if token?.attributes?.type === 'deep_job'}
+			<DeepJobDisplay
+				jobId={token?.attributes?.job_id ?? ''}
+				title={token?.attributes?.title ?? 'Deep job'}
+				initialSummary={token.summary ?? token?.attributes?.title ?? 'Deep job'}
+				initialState={token?.attributes?.state ?? 'queued'}
+				resultMessageId={token?.attributes?.result_message_id ?? null}
+			/>
+		{:else if token?.attributes?.type === 'tool_calls'}
 			<!-- Tool calls have dedicated handling with ToolCallDisplay component -->
 			<ToolCallDisplay
 				id={`${id}-${tokenIdx}-tc`}
