@@ -310,3 +310,9 @@ dist
 cypress/videos
 cypress/screenshots
 .vscode/settings.json
+
+# Local runtime and agent artifacts
+/.codex
+/.codex/
+/.webui_secret_key
+/backend/open_webui_data.zip
