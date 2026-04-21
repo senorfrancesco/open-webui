@@ -115,6 +115,11 @@ from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.payload import apply_system_prompt_to_body
 from open_webui.utils.response import normalize_usage
 from open_webui.utils.mcp.client import MCPClient
+from open_webui.utils.long_running_tools import (
+    annotate_body_with_session_rag_handoff,
+    detect_unconfirmed_long_running_output,
+    should_enable_session_rag_handoff,
+)
 
 
 from open_webui.config import (
@@ -549,6 +554,10 @@ def serialize_output(output: list) -> str:
     Convert OR-aligned output items to HTML for display.
     For LLM consumption, use convert_output_to_messages() instead.
     """
+    launch_state = detect_unconfirmed_long_running_output(output)
+    if launch_state is not None:
+        return launch_state['message']
+
     parts: list[str] = []
 
     # First pass: collect function_call_output items by call_id for lookup
@@ -2069,6 +2078,10 @@ async def chat_completion_files_handler(
 ) -> tuple[dict, dict[str, list]]:
     __event_emitter__ = extra_params['__event_emitter__']
     sources = []
+
+    if should_enable_session_rag_handoff(body):
+        annotate_body_with_session_rag_handoff(body)
+        return body, {'sources': []}
 
     if files := body.get('metadata', {}).get('files', None):
         # Check if all files are in full context mode

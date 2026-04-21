@@ -1,10 +1,12 @@
 import ast
+import asyncio
 import html
 import json
 import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from fastapi import FastAPI
 from starlette.testclient import TestClient
@@ -16,6 +18,11 @@ sys.modules['open_webui.utils.auth'] = stub_auth
 
 from open_webui.routers.deep_jobs import router
 from open_webui.services import deep_jobs as deep_jobs_service
+from open_webui.utils.long_running_tools import (
+    annotate_body_with_session_rag_handoff,
+    detect_unconfirmed_long_running_output,
+    should_enable_session_rag_handoff,
+)
 from open_webui.utils.misc import convert_output_to_messages
 
 
@@ -23,7 +30,9 @@ def _load_middleware_function_from_source(function_name: str):
     source_path = Path(__file__).resolve().parents[4] / 'utils' / 'middleware.py'
     module_ast = ast.parse(source_path.read_text(encoding='utf-8'))
     serialize_node = next(
-        node for node in module_ast.body if isinstance(node, ast.FunctionDef) and node.name == function_name
+        node
+        for node in module_ast.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
     )
     extracted_module = ast.Module(body=[serialize_node], type_ignores=[])
     ast.fix_missing_locations(extracted_module)
@@ -33,6 +42,11 @@ def _load_middleware_function_from_source(function_name: str):
         '_OPENAI_TOOL_DISPLAY_NAMES': {},
         'split_content_and_whitespace': lambda content: (content, ''),
         'is_opening_code_block': lambda content: False,
+        'detect_unconfirmed_long_running_output': detect_unconfirmed_long_running_output,
+        'should_enable_session_rag_handoff': should_enable_session_rag_handoff,
+        'annotate_body_with_session_rag_handoff': annotate_body_with_session_rag_handoff,
+        'Request': Any,
+        'UserModel': Any,
     }
     exec(compile(extracted_module, str(source_path), 'exec'), namespace)
     return namespace[function_name]
@@ -404,6 +418,55 @@ def test_serialize_output_hides_generic_tool_details_for_deep_job_calls():
     assert 'type="deep_job"' in rendered
     assert 'job_id="job-123"' in rendered
     assert 'type="tool_calls"' not in rendered
+
+
+def test_serialize_output_rewrites_unconfirmed_long_running_tool_result():
+    serialize_output = _load_serialize_output_from_source()
+
+    rendered = serialize_output(
+        [
+            {
+                'type': 'function_call',
+                'call_id': 'call-long-1',
+                'name': 'analyze_document_deep',
+                'arguments': '{}',
+            },
+            {
+                'type': 'function_call_output',
+                'call_id': 'call-long-1',
+                'output': '',
+            },
+        ]
+    )
+
+    assert 'Не удалось запустить инструмент долгого выполнения' in rendered
+
+
+def test_chat_completion_files_handler_skips_local_rag_for_session_handoff(monkeypatch):
+    monkeypatch.setenv('OPENWEBUI_SESSION_RAG_HANDOFF', 'preferred')
+    chat_completion_files_handler = _load_middleware_function_from_source('chat_completion_files_handler')
+    body = {
+        'model': 'llm-tools-platform',
+        'metadata': {
+            'chat_id': 'chat-1',
+            'message_id': 'msg-1',
+            'files': [
+                {
+                    'id': 'file-1',
+                    'name': 'contract.pdf',
+                    'type': 'text',
+                    'content': 'Штраф 10 процентов',
+                }
+            ],
+        },
+    }
+
+    patched_body, flags = asyncio.run(
+        chat_completion_files_handler(None, body, {'__event_emitter__': None}, None)
+    )
+
+    assert flags == {'sources': []}
+    assert patched_body['metadata']['llm_tools_platform_session_rag_handoff']['enabled'] is True
 
 
 def test_convert_output_to_messages_skips_openwebui_deep_job_extension_item():

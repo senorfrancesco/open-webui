@@ -64,6 +64,7 @@ from open_webui.utils.session_pool import (
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.headers import include_user_info_headers
 from open_webui.utils.anthropic import is_anthropic_url, get_anthropic_models
+from open_webui.utils.long_running_tools import run_openai_with_session_rag_handoff
 
 log = logging.getLogger(__name__)
 
@@ -1053,213 +1054,216 @@ async def generate_chat_completion(
     if BYPASS_MODEL_ACCESS_CONTROL:
         bypass_filter = True
 
-    idx = 0
+    async def _invoke_form_data(active_form_data: dict):
+        idx = 0
 
-    payload = {**form_data}
-    metadata = payload.pop('metadata', None)
+        payload = {**active_form_data}
+        metadata = payload.pop('metadata', None)
 
-    model_id = form_data.get('model')
-    model_info = await Models.get_model_by_id(model_id)
+        model_id = active_form_data.get('model')
+        model_info = await Models.get_model_by_id(model_id)
 
-    # Check model info and override the payload
-    if model_info:
-        if model_info.base_model_id:
-            base_model_id = (
-                request.base_model_id if hasattr(request, 'base_model_id') else model_info.base_model_id
-            )  # Use request's base_model_id if available
-            payload['model'] = base_model_id
-            model_id = base_model_id
+        # Check model info and override the payload
+        if model_info:
+            if model_info.base_model_id:
+                base_model_id = (
+                    request.base_model_id if hasattr(request, 'base_model_id') else model_info.base_model_id
+                )  # Use request's base_model_id if available
+                payload['model'] = base_model_id
+                model_id = base_model_id
 
-        params = model_info.params.model_dump()
+            params = model_info.params.model_dump()
 
-        if params:
-            system = params.pop('system', None)
+            if params:
+                system = params.pop('system', None)
 
-            payload = apply_model_params_to_body_openai(params, payload)
-            if not bypass_system_prompt:
-                payload = apply_system_prompt_to_body(system, payload, metadata, user)
+                payload = apply_model_params_to_body_openai(params, payload)
+                if not bypass_system_prompt:
+                    payload = apply_system_prompt_to_body(system, payload, metadata, user)
 
-        await check_model_access(user, model_info, bypass_filter)
-    else:
-        await check_model_access(user, None, bypass_filter)
+            await check_model_access(user, model_info, bypass_filter)
+        else:
+            await check_model_access(user, None, bypass_filter)
 
-    # Check if model is already in app state cache to avoid expensive get_all_models() call
-    models = request.app.state.OPENAI_MODELS
-    if not models or model_id not in models:
-        await get_all_models(request, user=user)
+        # Check if model is already in app state cache to avoid expensive get_all_models() call
         models = request.app.state.OPENAI_MODELS
-    model = models.get(model_id)
+        if not models or model_id not in models:
+            await get_all_models(request, user=user)
+            models = request.app.state.OPENAI_MODELS
+        model = models.get(model_id)
 
-    if model:
-        idx = model['urlIdx']
-    else:
-        raise HTTPException(
-            status_code=404,
-            detail=ERROR_MESSAGES.MODEL_NOT_FOUND(),
+        if model:
+            idx = model['urlIdx']
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=ERROR_MESSAGES.MODEL_NOT_FOUND(),
+            )
+
+        # Get the API config for the model
+        api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+            str(idx),
+            request.app.state.config.OPENAI_API_CONFIGS.get(
+                request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
+            ),  # Legacy support
         )
 
-    # Get the API config for the model
-    api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-        str(idx),
-        request.app.state.config.OPENAI_API_CONFIGS.get(
-            request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
-        ),  # Legacy support
-    )
+        prefix_id = api_config.get('prefix_id', None)
+        if prefix_id:
+            payload['model'] = payload['model'].replace(f'{prefix_id}.', '')
 
-    prefix_id = api_config.get('prefix_id', None)
-    if prefix_id:
-        payload['model'] = payload['model'].replace(f'{prefix_id}.', '')
+        # Add user info to the payload if the model is a pipeline
+        if 'pipeline' in model and model.get('pipeline'):
+            payload['user'] = {
+                'name': user.name,
+                'id': user.id,
+                'email': user.email,
+                'role': user.role,
+            }
 
-    # Add user info to the payload if the model is a pipeline
-    if 'pipeline' in model and model.get('pipeline'):
-        payload['user'] = {
-            'name': user.name,
-            'id': user.id,
-            'email': user.email,
-            'role': user.role,
-        }
+        url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
+        key = request.app.state.config.OPENAI_API_KEYS[idx]
 
-    url = request.app.state.config.OPENAI_API_BASE_URLS[idx]
-    key = request.app.state.config.OPENAI_API_KEYS[idx]
+        # Check if model is a reasoning model that needs special handling
+        if is_openai_new_model(payload['model']):
+            payload = openai_reasoning_model_handler(payload)
+        elif 'api.openai.com' not in url:
+            # Remove "max_completion_tokens" from the payload for backward compatibility
+            if 'max_completion_tokens' in payload:
+                payload['max_tokens'] = payload['max_completion_tokens']
+                del payload['max_completion_tokens']
 
-    # Check if model is a reasoning model that needs special handling
-    if is_openai_new_model(payload['model']):
-        payload = openai_reasoning_model_handler(payload)
-    elif 'api.openai.com' not in url:
-        # Remove "max_completion_tokens" from the payload for backward compatibility
-        if 'max_completion_tokens' in payload:
-            payload['max_tokens'] = payload['max_completion_tokens']
-            del payload['max_completion_tokens']
+        if 'max_tokens' in payload and 'max_completion_tokens' in payload:
+            del payload['max_tokens']
 
-    if 'max_tokens' in payload and 'max_completion_tokens' in payload:
-        del payload['max_tokens']
+        # Convert the modified body back to JSON
+        if 'logit_bias' in payload and payload['logit_bias']:
+            logit_bias = convert_logit_bias_input_to_json(payload['logit_bias'])
 
-    # Convert the modified body back to JSON
-    if 'logit_bias' in payload and payload['logit_bias']:
-        logit_bias = convert_logit_bias_input_to_json(payload['logit_bias'])
+            if logit_bias:
+                payload['logit_bias'] = json.loads(logit_bias)
 
-        if logit_bias:
-            payload['logit_bias'] = json.loads(logit_bias)
+        headers, cookies = await get_headers_and_cookies(request, url, key, api_config, metadata, user=user)
 
-    headers, cookies = await get_headers_and_cookies(request, url, key, api_config, metadata, user=user)
+        is_responses = api_config.get('api_type') == 'responses'
 
-    is_responses = api_config.get('api_type') == 'responses'
+        if api_config.get('azure', False):
+            # Only set api-key header if not using Azure Entra ID authentication
+            auth_type = api_config.get('auth_type', 'bearer')
+            if auth_type not in ('azure_ad', 'microsoft_entra_id'):
+                headers['api-key'] = key
 
-    if api_config.get('azure', False):
-        # Only set api-key header if not using Azure Entra ID authentication
-        auth_type = api_config.get('auth_type', 'bearer')
-        if auth_type not in ('azure_ad', 'microsoft_entra_id'):
-            headers['api-key'] = key
+            # Azure v1 format: base URL already ends with /openai/v1,
+            # model stays in the payload, no deployment URL rewriting.
+            is_azure_v1 = bool(re.search(r'/openai/v1(?:/|$)', url))
 
-        # Azure v1 format: base URL already ends with /openai/v1,
-        # model stays in the payload, no deployment URL rewriting.
-        is_azure_v1 = bool(re.search(r'/openai/v1(?:/|$)', url))
+            if is_azure_v1:
+                if is_responses:
+                    payload = convert_to_responses_payload(payload)
+                    request_url = f'{url.rstrip("/")}/responses'
+                else:
+                    request_url = f'{url.rstrip("/")}/chat/completions'
+            else:
+                api_version = api_config.get('api_version', '2023-03-15-preview')
+                request_url, payload = convert_to_azure_payload(url, payload, api_version)
+                headers['api-version'] = api_version
 
-        if is_azure_v1:
+                if is_responses:
+                    payload = convert_to_responses_payload(payload)
+                    request_url = f'{request_url}/responses?api-version={api_version}'
+                else:
+                    request_url = f'{request_url}/chat/completions?api-version={api_version}'
+        else:
             if is_responses:
                 payload = convert_to_responses_payload(payload)
-                request_url = f'{url.rstrip("/")}/responses'
+                request_url = f'{url}/responses'
             else:
-                request_url = f'{url.rstrip("/")}/chat/completions'
-        else:
-            api_version = api_config.get('api_version', '2023-03-15-preview')
-            request_url, payload = convert_to_azure_payload(url, payload, api_version)
-            headers['api-version'] = api_version
-
-            if is_responses:
-                payload = convert_to_responses_payload(payload)
-                request_url = f'{request_url}/responses?api-version={api_version}'
-            else:
-                request_url = f'{request_url}/chat/completions?api-version={api_version}'
-    else:
-        if is_responses:
-            payload = convert_to_responses_payload(payload)
-            request_url = f'{url}/responses'
-        else:
-            request_url = f'{url}/chat/completions'
-    # For Chat Completions, strip image parts from multimodal tool messages
-    # (Chat Completions doesn't support images in tool content).
-    if not is_responses and 'messages' in payload:
-        for message in payload['messages']:
-            if message.get('role') == 'tool' and isinstance(message.get('content'), list):
-                message['content'] = ''.join(
-                    part.get('text', '') for part in message['content'] if part.get('type') in ('input_text', 'text')
-                )
-
-    payload = json.dumps(payload)
-
-    r = None
-    streaming = False
-    response = None
-
-    try:
-        session = await get_session()
-
-        r = await session.request(
-            method='POST',
-            url=request_url,
-            data=payload,
-            headers=headers,
-            cookies=cookies,
-            ssl=AIOHTTP_CLIENT_SESSION_SSL,
-            timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT),
-        )
-
-        # Check if response is SSE
-        if 'text/event-stream' in r.headers.get('Content-Type', ''):
-            # If the provider returned an error status with SSE content-type,
-            # read the body and return a proper error response instead of
-            # streaming the error back (which hides the error from logs).
-            if r.status >= 400:
-                error_body = await r.text()
-                log.error(
-                    'Provider returned HTTP %d with SSE content-type: %s',
-                    r.status,
-                    error_body[:1000],
-                )
-                try:
-                    error_json = json.loads(error_body)
-                    return JSONResponse(status_code=r.status, content=error_json)
-                except json.JSONDecodeError:
-                    return JSONResponse(
-                        status_code=r.status,
-                        content={'error': {'message': error_body, 'code': r.status}},
+                request_url = f'{url}/chat/completions'
+        # For Chat Completions, strip image parts from multimodal tool messages
+        # (Chat Completions doesn't support images in tool content).
+        if not is_responses and 'messages' in payload:
+            for message in payload['messages']:
+                if message.get('role') == 'tool' and isinstance(message.get('content'), list):
+                    message['content'] = ''.join(
+                        part.get('text', '') for part in message['content'] if part.get('type') in ('input_text', 'text')
                     )
 
-            streaming = True
-            return StreamingResponse(
-                stream_wrapper(r, content_handler=stream_chunks_handler),
-                status_code=r.status,
-                headers=_clean_proxy_headers(r.headers),
+        payload = json.dumps(payload)
+
+        r = None
+        streaming = False
+        response = None
+
+        try:
+            session = await get_session()
+
+            r = await session.request(
+                method='POST',
+                url=request_url,
+                data=payload,
+                headers=headers,
+                cookies=cookies,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT),
             )
-        else:
-            try:
-                response = await r.json()
-            except Exception as e:
-                log.error(e)
-                response = await r.text()
 
-            if r.status >= 400:
-                if isinstance(response, (dict, list)):
-                    return JSONResponse(status_code=r.status, content=response)
-                else:
-                    return PlainTextResponse(status_code=r.status, content=response)
+            # Check if response is SSE
+            if 'text/event-stream' in r.headers.get('Content-Type', ''):
+                # If the provider returned an error status with SSE content-type,
+                # read the body and return a proper error response instead of
+                # streaming the error back (which hides the error from logs).
+                if r.status >= 400:
+                    error_body = await r.text()
+                    log.error(
+                        'Provider returned HTTP %d with SSE content-type: %s',
+                        r.status,
+                        error_body[:1000],
+                    )
+                    try:
+                        error_json = json.loads(error_body)
+                        return JSONResponse(status_code=r.status, content=error_json)
+                    except json.JSONDecodeError:
+                        return JSONResponse(
+                            status_code=r.status,
+                            content={'error': {'message': error_body, 'code': r.status}},
+                        )
 
-            # Convert Responses API result to simple format
-            if is_responses and isinstance(response, dict):
-                response = convert_responses_result(response)
+                streaming = True
+                return StreamingResponse(
+                    stream_wrapper(r, content_handler=stream_chunks_handler),
+                    status_code=r.status,
+                    headers=_clean_proxy_headers(r.headers),
+                )
+            else:
+                try:
+                    response = await r.json()
+                except Exception as e:
+                    log.error(e)
+                    response = await r.text()
 
-            return response
-    except Exception as e:
-        log.exception(e)
+                if r.status >= 400:
+                    if isinstance(response, (dict, list)):
+                        return JSONResponse(status_code=r.status, content=response)
+                    else:
+                        return PlainTextResponse(status_code=r.status, content=response)
 
-        raise HTTPException(
-            status_code=r.status if r else 500,
-            detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR,
-        )
-    finally:
-        if not streaming:
-            await cleanup_response(r)
+                # Convert Responses API result to simple format
+                if is_responses and isinstance(response, dict):
+                    response = convert_responses_result(response)
+
+                return response
+        except Exception as e:
+            log.exception(e)
+
+            raise HTTPException(
+                status_code=r.status if r else 500,
+                detail=ERROR_MESSAGES.SERVER_CONNECTION_ERROR,
+            )
+        finally:
+            if not streaming:
+                await cleanup_response(r)
+
+    return await run_openai_with_session_rag_handoff(form_data, _invoke_form_data, logger=log)
 
 
 async def embeddings(request: Request, form_data: dict, user):

@@ -45,6 +45,10 @@ from open_webui.utils.response import (
     convert_response_ollama_to_openai,
     convert_streaming_response_ollama_to_openai,
 )
+from open_webui.utils.long_running_tools import (
+    build_synthetic_launch_error_stream,
+    detect_unconfirmed_long_running_launch,
+)
 from open_webui.utils.filter import (
     get_sorted_filter_ids,
     process_filter_functions,
@@ -165,6 +169,14 @@ async def generate_chat_completion(
     log.debug(f'generate_chat_completion: {form_data}')
     if BYPASS_MODEL_ACCESS_CONTROL:
         bypass_filter = True
+
+    launch_state = detect_unconfirmed_long_running_launch((form_data or {}).get('messages'))
+    if launch_state is not None:
+        log.warning(
+            'Blocked follow-up model turn for unconfirmed long-running tool launch: call_id=%s',
+            launch_state['call_id'],
+        )
+        return build_synthetic_launch_error_stream(launch_state['message'])
 
     # Propagate bypass_filter via request.state so that downstream route
     # handlers (openai/ollama) can read it without exposing it as a query param.
