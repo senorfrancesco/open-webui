@@ -450,7 +450,7 @@
 		snapshot: DeepJobSnapshot,
 		resultPayload: DeepJobResultPayload
 	) => {
-		const buildDeepJobResultDownloadUrl = () => {
+		const buildDeepJobResultDownloadData = () => {
 			if (!snapshot?.job_id || !Array.isArray(resultPayload.artifacts)) {
 				return null;
 			}
@@ -477,15 +477,34 @@
 				return null;
 			}
 
-			return `${WEBUI_API_BASE_URL}/deep-jobs/${encodeURIComponent(snapshot.job_id)}/artifacts/${encodeURIComponent(String(reportArtifact.artifact_id))}/download`;
+			const metadata =
+				reportArtifact.metadata && typeof reportArtifact.metadata === 'object'
+					? reportArtifact.metadata
+					: {};
+			const localizedFallbackLabel = $i18n?.language?.startsWith('ru')
+				? 'Скачать отчёт'
+				: 'Download report';
+			const downloadLabel =
+				typeof metadata.download_label === 'string' && metadata.download_label.trim().length > 0
+					? metadata.download_label.trim()
+					: localizedFallbackLabel;
+
+			return {
+				url: `${WEBUI_API_BASE_URL}/deep-jobs/${encodeURIComponent(snapshot.job_id)}/artifacts/${encodeURIComponent(String(reportArtifact.artifact_id))}/download`,
+				label: downloadLabel
+			};
 		};
 
-		const resultDownloadUrl = buildDeepJobResultDownloadUrl();
-		const baseContent =
+		const resultDownload = buildDeepJobResultDownloadData();
+		const rawBaseContent =
 			resultPayload.assistant_message || JSON.stringify(resultPayload, null, 2);
+		const baseContent = rawBaseContent
+			.replace(/\n---\n\*\*(?:Отчет|Отчёт) (?:уже )?сохранен:\*\* `[^`]+`/giu, '')
+			.replace(/\n---\n\*\*Report (?:already )?saved:\*\* `[^`]+`/giu, '')
+			.trim();
 		const content =
-			resultDownloadUrl && !baseContent.includes('[Скачать отчёт]')
-				? `${baseContent}\n\n[Скачать отчёт](${resultDownloadUrl})`
+			resultDownload && !baseContent.includes(resultDownload.url)
+				? `${baseContent}\n\n[${resultDownload.label}](${resultDownload.url})`
 				: baseContent;
 
 		const resultMessage: Record<string, any> = {
@@ -2906,7 +2925,8 @@
 				model_item: $models.find((m) => m.id === model.id),
 
 				session_id: $socket?.id,
-				chat_id: _chatId || undefined,
+				chat_id: _chatId || $chatId || undefined,
+				ui_locale: $i18n?.language ?? undefined,
 				folder_id: $selectedFolder?.id ?? undefined,
 
 				id: responseMessageId,

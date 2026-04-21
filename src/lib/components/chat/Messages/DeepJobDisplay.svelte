@@ -15,8 +15,9 @@
 	const i18n = getContext<Writable<I18nType>>('i18n');
 
 	export let jobId = '';
-	export let title = 'Deep job';
-	export let initialSummary = 'Deep job';
+	export let title = 'Long-running tool';
+	export let toolLabel: string | null = null;
+	export let initialSummary = 'Long-running tool';
 	export let initialState: DeepJobState = 'queued';
 	export let resultMessageId: string | null = null;
 
@@ -27,6 +28,7 @@
 					job_id: jobId,
 					chat_id: null,
 					state: initialState,
+					tool_label: toolLabel,
 					phase: null,
 					summary: initialSummary,
 					progress: null,
@@ -62,6 +64,119 @@
 	const isTerminalState = (state: DeepJobState | null | undefined) =>
 		state === 'completed' || state === 'failed' || state === 'cancelled';
 
+	type LongRunningToolDisplayLocale = 'ru' | 'en';
+
+	const getDisplayLocale = (): LongRunningToolDisplayLocale =>
+		String($i18n?.language || 'en-US')
+			.toLowerCase()
+			.startsWith('ru')
+			? 'ru'
+			: 'en';
+
+	const getCanonicalLongRunningToolLabel = () =>
+		getDisplayLocale() === 'ru' ? 'Инструмент долгого выполнения' : 'Long-running tool';
+
+	const LEGACY_TOOL_LABEL_TEXT_PAIRS: Array<[string, string]> = [
+		['Вопрос по документу', 'Document question'],
+		['Быстрый анализ документа', 'Quick document analysis'],
+		['Глубокий анализ документа', 'Deep document analysis'],
+		['Сравнение документов', 'Document comparison'],
+		['Глубокое сравнение документов', 'Deep document comparison'],
+		['Быстрый анализ оборудования', 'Quick equipment analysis'],
+		['Глубокий анализ оборудования', 'Deep equipment analysis'],
+		['Анализ оборудования', 'Equipment analysis']
+	];
+
+	const DEEP_JOB_TEXT_PAIRS: Array<[string, string]> = [
+		['Инструмент долгого выполнения', 'Long-running tool'],
+		['Долгое выполнение инструмента', 'Long-running tool'],
+		['Задача поставлена в очередь.', 'Task queued.'],
+		['Выполняется обработка.', 'Processing in progress.'],
+		['Останавливается выполнение.', 'Stopping execution.'],
+		['Выполнение завершено.', 'Execution completed.'],
+		['Выполнение завершилось с ошибкой.', 'Execution failed.'],
+		['Выполнение отменено.', 'Execution cancelled.'],
+		['Индексация', 'Indexing'],
+		['Анализ', 'Analysis'],
+		['Завершение', 'Completion'],
+		['Шаг завершён.', 'Step completed.'],
+		['Подготавливаем фрагменты документа.', 'Preparing document fragments.'],
+		['Собираем итоговый вывод.', 'Compiling the final summary.'],
+		['Итог сохранён отдельным ответом ассистента.', 'Result saved in a separate assistant response.'],
+		['Журнал выполнения', 'Execution log'],
+		['Обновлено', 'Updated'],
+		['Ошибка', 'Error'],
+		['В очереди', 'Queued'],
+		['Выполняется', 'Running'],
+		['Завершено', 'Completed'],
+		['С ошибкой', 'Failed'],
+		['Отменено', 'Cancelled'],
+		['Останавливается...', 'Stopping...'],
+		['deep-job выполняется.', 'Deep job running.'],
+		['deep-job готовится к отмене.', 'Deep job preparing to cancel.'],
+		['deep-job завершён.', 'Deep job completed.'],
+		['deep-job завершён со статусом failed.', 'Deep job failed.'],
+		['deep-job отменён.', 'Deep job cancelled.']
+	];
+
+	const localizeDeepJobText = (value: string | null | undefined): string => {
+		const text = String(value ?? '').trim();
+		if (text === '') {
+			return '';
+		}
+
+		const locale = getDisplayLocale();
+		if (text === 'Deep job' || text === 'Long-running tool') {
+			return locale === 'ru' ? 'Инструмент долгого выполнения' : 'Long-running tool';
+		}
+		if (
+			text === 'Глубокая задача' ||
+			text === 'Долгое выполнение инструмента' ||
+			text === 'Инструмент долгого выполнения'
+		) {
+			return locale === 'ru' ? 'Инструмент долгого выполнения' : 'Long-running tool';
+		}
+		for (const [ru, en] of DEEP_JOB_TEXT_PAIRS) {
+			if (locale === 'ru' && text === en) {
+				return ru;
+			}
+			if (locale === 'en' && text === ru) {
+				return en;
+			}
+		}
+
+		if (locale === 'en' && text.startsWith('Индексирование ')) {
+			return `Indexing ${text.slice('Индексирование '.length)}`;
+		}
+		if (locale === 'ru' && text.startsWith('Indexing ')) {
+			return `Индексирование ${text.slice('Indexing '.length)}`;
+		}
+
+		return text;
+	};
+
+	const localizeLegacyToolLabel = (value: string | null | undefined): string => {
+		const text = String(value ?? '').trim();
+		if (text === '') {
+			return '';
+		}
+
+		const locale = getDisplayLocale();
+		for (const [ru, en] of LEGACY_TOOL_LABEL_TEXT_PAIRS) {
+			if (locale === 'ru' && text === en) {
+				return ru;
+			}
+			if (locale === 'en' && text === ru) {
+				return en;
+			}
+		}
+
+		return text;
+	};
+
+	const getLocalizedUiLabel = (ru: string, en: string) =>
+		getDisplayLocale() === 'ru' ? ru : en;
+
 	const translate = (key: string, fallback: string) => {
 		const translator = $i18n?.t;
 		return typeof translator === 'function' ? translator(key) : fallback;
@@ -70,15 +185,15 @@
 	const getStateLabel = (state: DeepJobState) => {
 		switch (state) {
 			case 'queued':
-				return translate('Queued', 'Queued');
+				return localizeDeepJobText(translate('Queued', 'Queued'));
 			case 'running':
-				return translate('Running', 'Running');
+				return localizeDeepJobText(translate('Running', 'Running'));
 			case 'completed':
-				return translate('Completed', 'Completed');
+				return localizeDeepJobText(translate('Completed', 'Completed'));
 			case 'failed':
-				return translate('Failed', 'Failed');
+				return localizeDeepJobText(translate('Failed', 'Failed'));
 			case 'cancelled':
-				return translate('Cancelled', 'Cancelled');
+				return localizeDeepJobText(translate('Cancelled', 'Cancelled'));
 			default:
 				return state;
 		}
@@ -153,18 +268,34 @@
 	});
 
 	$: snapshot = $deepJobStore ?? initialSnapshot;
+	$: displayTitle = getCanonicalLongRunningToolLabel();
 	$: displayState = snapshot?.state ?? initialState;
 	$: displayStateLabel =
 		snapshot?.cancel_requested && !isTerminalState(displayState)
-			? translate('Stopping...', 'Stopping...')
+			? localizeDeepJobText(translate('Stopping...', 'Stopping...'))
 			: getStateLabel(displayState);
 	$: displayStateClassName = STATE_CLASSNAMES[displayState] ?? STATE_CLASSNAMES.queued;
-	$: displaySummary = snapshot?.summary || initialSummary || title;
+	$: displayToolLabel = localizeLegacyToolLabel(snapshot?.tool_label || toolLabel || '');
+	$: displaySummary = localizeDeepJobText(snapshot?.summary || initialSummary || title);
+	$: showSummary =
+		displaySummary !== '' && displaySummary !== displayTitle && displaySummary !== displayToolLabel;
 	$: progressLabel = getProgressLabel(snapshot?.progress ?? null);
 	$: progressPercent = getProgressPercent(snapshot?.progress ?? null);
 	$: errorText = getErrorText(snapshot?.error ?? null);
 	$: updatedLabel = formatTimestamp(snapshot?.updated_at ?? null);
 	$: steps = snapshot?.steps ?? [];
+	$: currentStep = steps.length > 0 ? steps[steps.length - 1] : null;
+	$: showCurrentStepCard =
+		currentStep !== null &&
+		(
+			(currentStep.text || '') !== displaySummary ||
+			(currentStep.phase || '') !== (snapshot?.phase || '')
+		);
+	$: completedStepLabels = steps
+		.slice(0, -1)
+		.map((step) => localizeDeepJobText(`${step.phase || step.text || ''}`.trim()))
+		.filter((label, index, labels) => label !== '' && labels.indexOf(label) === index)
+		.slice(-4);
 </script>
 
 <div
@@ -172,7 +303,7 @@
 >
 	<div class="flex flex-col gap-3 p-4">
 		<div class="flex flex-wrap items-center gap-2">
-			<div class="min-w-0 flex-1 text-sm font-medium text-gray-900 dark:text-gray-100">{title}</div>
+			<div class="min-w-0 flex-1 text-sm font-medium text-gray-900 dark:text-gray-100">{displayTitle}</div>
 			<div
 				class={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${displayStateClassName}`}
 			>
@@ -180,20 +311,51 @@
 			</div>
 		</div>
 
-		{#if snapshot?.phase}
-			<div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-				{snapshot.phase}
+		{#if displayToolLabel}
+			<div class="text-sm font-medium text-gray-800 dark:text-gray-100">
+				{displayToolLabel}
 			</div>
 		{/if}
 
-		<div class="text-sm text-gray-700 dark:text-gray-200">{displaySummary}</div>
+		{#if snapshot?.phase}
+			<div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+				{localizeDeepJobText(snapshot.phase)}
+			</div>
+		{/if}
+
+		{#if showSummary}
+			<div class="text-sm text-gray-700 dark:text-gray-200">{displaySummary}</div>
+		{/if}
+
+		{#if showCurrentStepCard}
+			<div class="rounded-xl border border-blue-200/80 bg-white/80 px-3 py-2 dark:border-blue-900/60 dark:bg-gray-950/40">
+				{#if currentStep?.phase}
+					<div class="text-[11px] font-medium uppercase tracking-wide text-blue-700 dark:text-blue-300">
+						{localizeDeepJobText(currentStep.phase)}
+					</div>
+				{/if}
+				<div class="mt-1 text-sm text-gray-800 dark:text-gray-100">
+					{localizeDeepJobText(currentStep?.text)}
+				</div>
+			</div>
+		{/if}
+
+		{#if completedStepLabels.length > 0}
+			<div class="flex flex-wrap gap-2">
+				{#each completedStepLabels as stepLabel}
+					<div class="rounded-full border border-gray-200 bg-white/80 px-2 py-0.5 text-[11px] text-gray-600 dark:border-gray-700 dark:bg-gray-950/40 dark:text-gray-300">
+						{stepLabel}
+					</div>
+				{/each}
+			</div>
+		{/if}
 
 		{#if progressLabel || updatedLabel}
 			<div class="space-y-1.5">
 				<div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-gray-500 dark:text-gray-400">
 					<div>{progressLabel}</div>
 					{#if updatedLabel}
-						<div>{translate('Updated', 'Updated')} {updatedLabel}</div>
+						<div>{localizeDeepJobText(translate('Updated', 'Updated'))} {updatedLabel}</div>
 					{/if}
 				</div>
 
@@ -211,7 +373,7 @@
 		{#if errorText}
 			<div class="rounded-xl border border-red-200 bg-red-50 px-3 py-2 dark:border-red-900/70 dark:bg-red-950/40">
 				<div class="text-xs font-medium uppercase tracking-wide text-red-700 dark:text-red-300">
-					{translate('Error', 'Error')}
+					{localizeDeepJobText(translate('Error', 'Error'))}
 				</div>
 				<div class="mt-1 text-sm text-red-700 dark:text-red-200">{errorText}</div>
 			</div>
@@ -219,7 +381,7 @@
 
 		{#if snapshot?.result_message_id}
 			<div class="text-xs text-gray-500 dark:text-gray-400">
-				Result saved in a separate assistant response.
+				{localizeDeepJobText('Result saved in a separate assistant response.')}
 			</div>
 		{/if}
 
@@ -231,7 +393,7 @@
 						expanded = !expanded;
 					}}
 				>
-					<span>Execution log</span>
+					<span>{localizeDeepJobText('Execution log')}</span>
 					<svg
 						class={`size-4 transition-transform ${expanded ? 'rotate-180' : ''}`}
 						viewBox="0 0 20 20"
@@ -252,10 +414,12 @@
 							<div class="flex items-start gap-3 rounded-xl bg-white/70 px-3 py-2 dark:bg-gray-950/40">
 								<div class={`mt-1 size-1.5 rounded-full ${STEP_LEVEL_CLASSNAMES[step.level] ?? STEP_LEVEL_CLASSNAMES.info}`}></div>
 								<div class="min-w-0 flex-1">
-									<div class="text-sm text-gray-800 dark:text-gray-100">{step.text}</div>
+									<div class="text-sm text-gray-800 dark:text-gray-100">
+										{localizeDeepJobText(step.text)}
+									</div>
 									<div class="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
 										{#if step.phase}
-											<span>{step.phase}</span>
+											<span>{localizeDeepJobText(step.phase)}</span>
 										{/if}
 										{#if formatTimestamp(step.ts)}
 											<span>{formatTimestamp(step.ts)}</span>

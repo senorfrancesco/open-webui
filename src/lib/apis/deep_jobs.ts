@@ -19,6 +19,7 @@ export type DeepJobSnapshot = {
 	job_id: string;
 	chat_id: string | null;
 	state: DeepJobState;
+	tool_label: string | null;
 	phase: string | null;
 	summary: string | null;
 	progress: DeepJobProgress | null;
