@@ -299,6 +299,7 @@ def build_deep_job_output_item(
         or payload.get('assistant_message')
         or f'{tool_function_name}: long-running job accepted.'
     ).strip()
+    tool_label = str(payload.get('tool_label') or '').strip() or None
 
     result_message_id = str(payload.get('result_message_id') or '').strip() or None
 
@@ -306,7 +307,8 @@ def build_deep_job_output_item(
         'type': 'open_webui:deep_job',
         'tool_call_id': tool_call_id,
         'job_id': job_id,
-        'title': 'Deep job',
+        'title': 'Long-running tool',
+        'tool_label': tool_label,
         'summary': summary,
         'state': job_status,
         'result_message_id': result_message_id,
@@ -650,7 +652,8 @@ def serialize_output(output: list) -> str:
                 )
 
         elif item_type == 'open_webui:deep_job':
-            title = str(item.get('title') or 'Deep job').strip() or 'Deep job'
+            title = str(item.get('title') or 'Long-running tool').strip() or 'Long-running tool'
+            tool_label = str(item.get('tool_label') or '').strip()
             summary = str(item.get('summary') or title).strip() or title
             state = str(item.get('state') or 'queued').strip() or 'queued'
             job_id = str(item.get('job_id') or '').strip()
@@ -665,6 +668,8 @@ def serialize_output(output: list) -> str:
             ]
             if job_id:
                 attrs.append(f'job_id="{html.escape(job_id)}"')
+            if tool_label:
+                attrs.append(f'tool_label="{html.escape(tool_label)}"')
             if result_message_id:
                 attrs.append(f'result_message_id="{html.escape(result_message_id)}"')
 

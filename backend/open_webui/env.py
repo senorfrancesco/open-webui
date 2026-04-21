@@ -242,6 +242,7 @@ FORWARD_SESSION_INFO_HEADER_MESSAGE_ID = os.environ.get(
     'FORWARD_SESSION_INFO_HEADER_MESSAGE_ID', 'X-OpenWebUI-Message-Id'
 )
 FORWARD_SESSION_INFO_HEADER_CHAT_ID = os.environ.get('FORWARD_SESSION_INFO_HEADER_CHAT_ID', 'X-OpenWebUI-Chat-Id')
+FORWARD_SESSION_INFO_HEADER_LOCALE = os.environ.get('FORWARD_SESSION_INFO_HEADER_LOCALE', 'X-OpenWebUI-Locale')
 
 # Experimental feature, may be removed in future
 ENABLE_STAR_SESSIONS_MIDDLEWARE = os.environ.get('ENABLE_STAR_SESSIONS_MIDDLEWARE', 'False').lower() == 'true'

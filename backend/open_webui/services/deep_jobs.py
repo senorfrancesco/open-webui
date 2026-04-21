@@ -167,14 +167,16 @@ def _normalize_steps(raw_status: Dict[str, Any]) -> list[Dict[str, Any]]:
     for item in raw_status.get('status_history') or []:
         if not isinstance(item, dict):
             continue
-        text = str(item.get('content') or item.get('title') or item.get('key') or '').strip()
+        title = str(item.get('title') or '').strip()
+        phase = title or str(item.get('key') or '').strip() or None
+        text = str(item.get('content') or title or item.get('key') or '').strip()
         if not text:
             continue
-        phase = str(item.get('key') or '').strip() or None
         level = str(item.get('level') or 'info').strip() or 'info'
         ts = item.get('updated_at') or fallback_ts
         normalized.append(
             {
+                'key': str(item.get('key') or '').strip() or None,
                 'ts': str(ts) if ts is not None else None,
                 'level': level,
                 'phase': phase,
@@ -189,9 +191,36 @@ def normalize_tool_job_snapshot(raw_status: Dict[str, Any], *, chat_id: Optional
     cancel_requested = raw_state == 'cancelling'
     normalized_state = 'running' if cancel_requested else raw_state
     progress = _normalize_progress(raw_status.get('progress'))
-    phase = str(raw_status.get('current_stage') or '').strip() or None
-    if not phase and isinstance(raw_status.get('progress'), dict):
-        phase = str(raw_status['progress'].get('phase') or '').strip() or None
+    steps = _normalize_steps(raw_status)
+
+    raw_phase = str(raw_status.get('current_stage') or '').strip()
+    if not raw_phase and isinstance(raw_status.get('progress'), dict):
+        raw_phase = str(raw_status['progress'].get('phase') or '').strip()
+
+    phase = raw_phase or None
+    if raw_phase:
+        matched_phase_entry = next(
+            (
+                item
+                for item in reversed(raw_status.get('status_history') or [])
+                if isinstance(item, dict)
+                and (
+                    str(item.get('key') or '').strip() == raw_phase
+                    or str(item.get('title') or '').strip() == raw_phase
+                    or str(item.get('content') or '').strip() == raw_phase
+                )
+            ),
+            None,
+        )
+        if matched_phase_entry is not None:
+            phase = (
+                str(matched_phase_entry.get('title') or '').strip()
+                or str(matched_phase_entry.get('content') or '').strip()
+                or raw_phase
+            )
+    elif not phase and steps:
+        phase = str(steps[-1].get('phase') or steps[-1].get('text') or '').strip() or None
+
     error_summary = str(raw_status.get('error_summary') or '').strip() or None
     summary = str(raw_status.get('status_text') or '').strip() or str(raw_status.get('result_preview') or '').strip() or error_summary or None
     result_message_id = str(raw_status.get('result_message_id') or '').strip() or None
@@ -202,10 +231,12 @@ def normalize_tool_job_snapshot(raw_status: Dict[str, Any], *, chat_id: Optional
         'job_id': str(raw_status.get('job_id') or '').strip(),
         'chat_id': normalized_chat_id,
         'state': normalized_state,
+        'tool_label': str(raw_status.get('tool_label') or '').strip() or None,
         'phase': phase,
+        'phase_key': raw_phase or None,
         'summary': summary,
         'progress': progress,
-        'steps': _normalize_steps(raw_status),
+        'steps': steps,
         'cancel_requested': cancel_requested,
         'result_message_id': result_message_id,
         'error': ({'summary': error_summary} if error_summary else None),

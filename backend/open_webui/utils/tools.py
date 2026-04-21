@@ -51,6 +51,7 @@ from open_webui.env import (
     AIOHTTP_CLIENT_SESSION_TOOL_SERVER_SSL,
     ENABLE_FORWARD_USER_INFO_HEADERS,
     FORWARD_SESSION_INFO_HEADER_CHAT_ID,
+    FORWARD_SESSION_INFO_HEADER_LOCALE,
     FORWARD_SESSION_INFO_HEADER_MESSAGE_ID,
     REDIS_KEY_PREFIX,
 )
@@ -347,6 +348,8 @@ async def get_tools(request: Request, tool_ids: list[str], user: UserModel, extr
                                 headers[FORWARD_SESSION_INFO_HEADER_CHAT_ID] = metadata.get('chat_id')
                             if metadata and metadata.get('message_id'):
                                 headers[FORWARD_SESSION_INFO_HEADER_MESSAGE_ID] = metadata.get('message_id')
+                            if metadata and metadata.get('ui_locale'):
+                                headers[FORWARD_SESSION_INFO_HEADER_LOCALE] = metadata.get('ui_locale')
 
                         async def make_tool_function(function_name, tool_server_data, headers):
                             async def tool_function(**kwargs):

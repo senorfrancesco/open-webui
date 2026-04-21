@@ -68,15 +68,20 @@ def test_normalize_tool_job_snapshot_maps_status_payload():
         {
             'job_id': 'job-1',
             'status': 'cancelling',
-            'current_stage': 'indexing',
+            'current_stage': 'stage:indexing',
             'submitted_at': '2026-04-16T12:00:00Z',
             'status_text': 'Индексирование 2/4',
             'progress': {'fraction': 0.5, 'phase': 'indexing'},
             'status_history': [
                 {
-                    'key': 'indexing',
+                    'key': 'stage:indexing',
                     'title': 'Индексация',
                     'content': 'Индексирование 2/4',
+                },
+                {
+                    'key': 'stage:analysis',
+                    'title': 'Анализ',
+                    'content': 'Собираем итоговый вывод.',
                 }
             ],
             'result_message_id': 'msg-9',
@@ -87,11 +92,15 @@ def test_normalize_tool_job_snapshot_maps_status_payload():
     assert snapshot['job_id'] == 'job-1'
     assert snapshot['chat_id'] == 'chat-1'
     assert snapshot['state'] == 'running'
+    assert snapshot['tool_label'] is None
     assert snapshot['cancel_requested'] is True
-    assert snapshot['phase'] == 'indexing'
+    assert snapshot['phase'] == 'Индексация'
     assert snapshot['summary'] == 'Индексирование 2/4'
     assert snapshot['progress'] == {'current': 50, 'total': 100, 'unit': 'percent'}
-    assert snapshot['steps'][0]['phase'] == 'indexing'
+    assert snapshot['steps'][0]['phase'] == 'Индексация'
+    assert snapshot['steps'][0]['text'] == 'Индексирование 2/4'
+    assert snapshot['steps'][1]['phase'] == 'Анализ'
+    assert snapshot['steps'][1]['text'] == 'Собираем итоговый вывод.'
     assert snapshot['result_message_id'] == 'msg-9'
 
 
@@ -154,6 +163,7 @@ def test_active_deep_job_route_returns_normalized_payload(monkeypatch):
             'job_id': 'job-1',
             'chat_id': chat_id,
             'state': 'running',
+            'tool_label': 'Глубокий анализ оборудования',
             'phase': 'indexing',
             'summary': 'Идёт индексирование',
             'progress': None,
@@ -175,6 +185,7 @@ def test_active_deep_job_route_returns_normalized_payload(monkeypatch):
             'job_id': 'job-1',
             'chat_id': 'chat-1',
             'state': 'running',
+            'tool_label': 'Глубокий анализ оборудования',
             'phase': 'indexing',
             'summary': 'Идёт индексирование',
             'progress': None,
@@ -317,7 +328,8 @@ def test_serialize_output_renders_openwebui_deep_job_anchor():
             {
                 'type': 'open_webui:deep_job',
                 'job_id': 'job-123',
-                'title': 'Deep job',
+                'title': 'Long-running tool',
+                'tool_label': 'Глубокий анализ документа',
                 'summary': 'Идёт индексирование',
                 'state': 'running',
                 'result_message_id': 'msg-result-9',
@@ -329,7 +341,8 @@ def test_serialize_output_renders_openwebui_deep_job_anchor():
     assert 'job_id="job-123"' in rendered
     assert 'state="running"' in rendered
     assert 'done="false"' in rendered
-    assert 'title="Deep job"' in rendered
+    assert 'title="Long-running tool"' in rendered
+    assert 'tool_label="Глубокий анализ документа"' in rendered
     assert 'result_message_id="msg-result-9"' in rendered
     assert '<summary>Идёт индексирование</summary>' in rendered
 
@@ -343,6 +356,7 @@ def test_build_deep_job_output_item_maps_accepted_tool_result():
         tool_result='''{
   "status": "accepted",
   "tool_name": "analyze_document_deep",
+  "tool_label": "Глубокий анализ документа",
   "job_id": "job-123",
   "status_url": "/tool-server/tool-jobs/job-123",
   "job_status": "queued",
@@ -355,7 +369,8 @@ def test_build_deep_job_output_item_maps_accepted_tool_result():
         'type': 'open_webui:deep_job',
         'tool_call_id': 'call-7',
         'job_id': 'job-123',
-        'title': 'Deep job',
+        'title': 'Long-running tool',
+        'tool_label': 'Глубокий анализ документа',
         'summary': 'Задача принята',
         'state': 'queued',
         'result_message_id': None,
@@ -369,7 +384,7 @@ def test_build_deep_job_output_item_maps_plain_text_accepted_tool_result():
         tool_function_name='analyze_equipment_deep',
         tool_call_id='call-9',
         tool_result=(
-            'Глубокий анализ оборудования принят как deep-job.\n'
+            'Глубокий анализ оборудования принят как инструмент долгого выполнения.\n'
             'job_id: job-plain-9\n'
             'status_url: /tool-server/tool-jobs/job-plain-9'
         ),
@@ -379,8 +394,9 @@ def test_build_deep_job_output_item_maps_plain_text_accepted_tool_result():
         'type': 'open_webui:deep_job',
         'tool_call_id': 'call-9',
         'job_id': 'job-plain-9',
-        'title': 'Deep job',
-        'summary': 'Глубокий анализ оборудования принят как deep-job.',
+        'title': 'Long-running tool',
+        'tool_label': None,
+        'summary': 'Глубокий анализ оборудования принят как инструмент долгого выполнения.',
         'state': 'queued',
         'result_message_id': None,
     }
@@ -401,14 +417,20 @@ def test_serialize_output_hides_generic_tool_details_for_deep_job_calls():
             {
                 'type': 'function_call_output',
                 'call_id': 'call-7',
-                'output': [{'type': 'input_text', 'text': '{"status": "accepted", "job_id": "job-123"}'}],
+                'output': [
+                    {
+                        'type': 'input_text',
+                        'text': '{"status": "accepted", "job_id": "job-123", "status_url": "/tool-server/tool-jobs/job-123"}',
+                    }
+                ],
                 'status': 'completed',
             },
             {
                 'type': 'open_webui:deep_job',
                 'tool_call_id': 'call-7',
                 'job_id': 'job-123',
-                'title': 'Deep job',
+                'title': 'Long-running tool',
+                'tool_label': 'Глубокий анализ документа',
                 'summary': 'Задача принята',
                 'state': 'queued',
             },
@@ -479,7 +501,8 @@ def test_convert_output_to_messages_skips_openwebui_deep_job_extension_item():
             {
                 'type': 'open_webui:deep_job',
                 'job_id': 'job-123',
-                'title': 'Deep job',
+                'title': 'Long-running tool',
+                'tool_label': 'Глубокий анализ документа',
                 'summary': 'Идёт индексирование',
                 'state': 'running',
             },
