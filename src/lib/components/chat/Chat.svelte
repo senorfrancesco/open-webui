@@ -200,6 +200,24 @@
 		return !!job && ['completed', 'failed', 'cancelled'].includes(job.state);
 	};
 
+	const getCurrentExecutionMessage = () => {
+		return history.currentId ? history.messages[history.currentId] : null;
+	};
+
+	const hasPendingAssistantResponse = () => {
+		const currentMessage = getCurrentExecutionMessage();
+		return !!currentMessage && currentMessage.role === 'assistant' && currentMessage.done === false;
+	};
+
+	const isChatExecutionBusy = () => {
+		return (
+			isDeepJobActive(activeDeepJob) ||
+			Boolean(generating) ||
+			(Array.isArray(taskIds) && taskIds.length > 0) ||
+			hasPendingAssistantResponse()
+		);
+	};
+
 	const getDeepJobAnchorOutputItem = (message, jobId: string | null = null) => {
 		const outputItems = Array.isArray(message?.output) ? message.output : [];
 		return (
@@ -671,6 +689,7 @@
 		}
 
 		const previousActiveJobId = activeDeepJob?.job_id ?? null;
+		const hadActiveDeepJob = isDeepJobActive(activeDeepJob);
 
 		const activeJobResponse = await getActiveDeepJob(localStorage.token, _chatId).catch((error) => {
 			console.error('Failed to sync active deep job:', error);
@@ -700,9 +719,12 @@
 		}
 
 		activeDeepJob = isDeepJobActive(resolvedJob) ? resolvedJob : null;
+		const currentChatId = $chatId || chatIdProp;
 
 		if (isDeepJobActive(activeDeepJob)) {
 			scheduleActiveDeepJobSync(document.hidden ? 5000 : 2000);
+		} else if (hadActiveDeepJob && currentChatId === _chatId && !isChatExecutionBusy()) {
+			await processNextInQueue(_chatId);
 		}
 
 		return activeDeepJob;
@@ -758,9 +780,7 @@
 			}
 
 			// Process any queued requests if the chat is idle
-			const lastMessage = history.currentId ? history.messages[history.currentId] : null;
-			const isIdle = !lastMessage || lastMessage.role !== 'assistant' || lastMessage.done;
-			if (isIdle) {
+			if (!isChatExecutionBusy()) {
 				await processNextInQueue(chatIdProp);
 			}
 
@@ -1986,6 +2006,8 @@
 	let processingQueueChats = new Set<string>();
 
 	const processNextInQueue = async (targetChatId: string) => {
+		const currentChatId = $chatId || chatIdProp;
+		if (!targetChatId || targetChatId !== currentChatId || isChatExecutionBusy()) return;
 		if (processingQueueChats.has(targetChatId)) return;
 
 		const queue = $chatRequestQueues[targetChatId];
@@ -2017,6 +2039,11 @@
 			restoreDeepJobResultCurrentId();
 		}
 		taskIds = null;
+
+		const currentChatId = $chatId || chatIdProp;
+		if (currentChatId === _chatId && !isChatExecutionBusy()) {
+			await processNextInQueue(_chatId);
+		}
 	};
 
 	const chatActionHandler = async (_chatId, actionId, modelId, responseMessageId, event = null) => {
@@ -2501,13 +2528,12 @@
 			return;
 		}
 
-		// Check if the assistant is still generating the main response
-		// (don't block on background tasks like title gen, follow-ups, tags)
-		const lastMessage = history.currentId ? history.messages[history.currentId] : null;
-		const isGenerating = lastMessage && lastMessage.role === 'assistant' && !lastMessage.done;
+		// Treat an active deep-job like an in-flight assistant response:
+		// follow-up turns should enter the queue instead of interrupting it.
+		const isDeepJobRunning = isDeepJobActive(activeDeepJob);
 
-		if (isGenerating) {
-			if ($settings?.enableMessageQueue ?? true) {
+		if (isChatExecutionBusy()) {
+			if (isDeepJobRunning || ($settings?.enableMessageQueue ?? true)) {
 				// Enqueue the request
 				const _files = structuredClone(files);
 				chatRequestQueues.update((q) => ({
@@ -3107,7 +3133,7 @@
 			generationController = null;
 		}
 
-		if (processQueue && !isDeepJobActive(activeDeepJob)) {
+		if (processQueue && !isChatExecutionBusy()) {
 			await processNextInQueue($chatId);
 		}
 	};
@@ -3569,6 +3595,18 @@
 										const queue = $chatRequestQueues[$chatId] ?? [];
 										const item = queue.find((m) => m.id === id);
 										if (item) {
+											if (isDeepJobActive(activeDeepJob)) {
+												chatRequestQueues.update((q) => ({
+													...q,
+													[$chatId]: [item, ...queue.filter((m) => m.id !== id)]
+												}));
+												toast.info(
+													$i18n.t(
+														'The queued message will be sent after the current Deep job finishes.'
+													)
+												);
+												return;
+											}
 											// Remove from queue
 											chatRequestQueues.update((q) => ({
 												...q,
