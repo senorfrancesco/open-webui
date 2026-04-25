@@ -15,14 +15,27 @@ LONG_RUNNING_TOOL_NAMES = frozenset(
     }
 )
 
-LONG_RUNNING_TOOL_LAUNCH_ERROR = (
-    "Не удалось запустить инструмент долгого выполнения.\n"
-    "Инструмент не вернул подтверждение запуска (`job_id` и `status_url`). "
-    "Повторите запрос и проверьте, что инструмент включён в текущем чате."
-)
-
 SESSION_RAG_HANDOFF_MARKER = "llm_tools_platform_session_rag_handoff"
-SESSION_RAG_HANDOFF_MODEL = "llm-tools-platform"
+
+_LONG_RUNNING_TOOL_LAUNCH_LABELS = {
+    "analyze_equipment_deep": "инструмент глубокого анализа оборудования",
+    "analyze_document_deep": "инструмент глубокого анализа документа",
+}
+
+
+def build_long_running_tool_launch_error(tool_name: str | None = None) -> str:
+    tool_label = _LONG_RUNNING_TOOL_LAUNCH_LABELS.get(
+        str(tool_name or "").strip(),
+        "инструмент глубокого анализа",
+    )
+    return (
+        f"Не удалось запустить {tool_label}.\n"
+        "Инструмент не вернул подтверждение запуска (`job_id` и `status_url`). "
+        "Повторите запрос и проверьте, что инструмент включён в текущем чате."
+    )
+
+
+LONG_RUNNING_TOOL_LAUNCH_ERROR = build_long_running_tool_launch_error()
 
 
 def _session_rag_handoff_mode() -> str:
@@ -77,7 +90,7 @@ def _build_session_rag_handoff_payload(body: dict[str, Any]) -> dict[str, Any]:
         "message_id": str(metadata.get("message_id") or "").strip() or None,
         "file_count": len(files),
         "original_model": original_model,
-        "routed_model": SESSION_RAG_HANDOFF_MODEL,
+        "routed_model": original_model,
     }
 
 
@@ -120,9 +133,6 @@ def prepare_openai_form_data_for_session_rag_handoff(form_data: dict[str, Any]) 
         prepared["thread_id"] = str(handoff_payload["chat_id"])
     if handoff_payload.get("chat_id") and not str(prepared.get("session_id") or "").strip():
         prepared["session_id"] = str(handoff_payload["chat_id"])
-    original_model = str(prepared.get("model") or "").strip()
-    if original_model and original_model != SESSION_RAG_HANDOFF_MODEL:
-        prepared["model"] = SESSION_RAG_HANDOFF_MODEL
     prepared["openwebui_session_rag_handoff"] = handoff_payload
     return prepared
 
@@ -218,7 +228,11 @@ def detect_unconfirmed_long_running_launch(messages: list[dict[str, Any]] | None
         content = _normalize_message_content(message.get("content"))
         if _is_confirmed_long_running_text(content):
             return None
-        return {"call_id": call_id, "content": content, "message": LONG_RUNNING_TOOL_LAUNCH_ERROR}
+        return {
+            "call_id": call_id,
+            "content": content,
+            "message": build_long_running_tool_launch_error(call_lookup.get(call_id, "")),
+        }
     return None
 
 
@@ -254,7 +268,11 @@ def detect_unconfirmed_long_running_output(output: list[dict[str, Any]] | None) 
         content = _normalize_output_content(item.get("output"))
         if _is_confirmed_long_running_text(content):
             return None
-        return {"call_id": call_id, "content": content, "message": LONG_RUNNING_TOOL_LAUNCH_ERROR}
+        return {
+            "call_id": call_id,
+            "content": content,
+            "message": build_long_running_tool_launch_error(call_lookup.get(call_id, "")),
+        }
     return None
 
 
@@ -296,22 +314,4 @@ async def run_openai_with_session_rag_handoff(
         return await invoke(form_data)
 
     prepared = prepare_openai_form_data_for_session_rag_handoff(form_data)
-    handoff_payload = prepared.get("openwebui_session_rag_handoff") or {}
-    try:
-        return await invoke(prepared)
-    except Exception as exc:
-        original_model = str(handoff_payload.get("original_model") or "").strip()
-        if (
-            str(handoff_payload.get("mode") or "").strip().lower() != "preferred"
-            or not original_model
-            or original_model == prepared.get("model")
-        ):
-            raise
-        if logger is not None:
-            logger.warning(
-                "Session RAG handoff fallback to original model after backend wrapper failure: "
-                "original_model=%s error=%s",
-                original_model,
-                exc,
-            )
-        return await invoke(form_data)
+    return await invoke(prepared)

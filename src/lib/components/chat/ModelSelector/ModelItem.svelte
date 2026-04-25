@@ -2,9 +2,11 @@
 	import { marked } from 'marked';
 
 	import { getContext, tick } from 'svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as i18nType } from 'i18next';
 	import dayjs from '$lib/dayjs';
 
-	import { mobile, settings, user } from '$lib/stores';
+	import { config, mobile, settings, user } from '$lib/stores';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
@@ -17,7 +19,7 @@
 	import Tag from '$lib/components/icons/Tag.svelte';
 	import Label from '$lib/components/icons/Label.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n: Writable<i18nType> = getContext('i18n');
 
 	export let selectedModelIdx: number = -1;
 	export let item: any = {};
@@ -27,10 +29,11 @@
 	export let unloadModelHandler: (modelValue: string) => void = () => {};
 	export let pinModelHandler: (modelId: string) => void = () => {};
 	export let deleteModelHandler: (model: any) => void = () => {};
+	export let runtimeUnregisterHandler: (model: any) => void = () => {};
 
 	export let onClick: () => void = () => {};
 
-	const copyLinkHandler = async (model) => {
+	const copyLinkHandler = async (model: any) => {
 		const baseUrl = window.location.origin;
 		const res = await copyToClipboard(`${baseUrl}/?model=${encodeURIComponent(model.id)}`);
 
@@ -42,6 +45,12 @@
 	};
 
 	let showMenu = false;
+	let runtimeBadges: string[] = [];
+	$: runtimeBadges =
+		$config?.features?.enable_agent_navigator_runtime_models &&
+		Array.isArray(item?.model?.info?.meta?.runtime_badges)
+		? item.model.info.meta.runtime_badges.slice(0, 3)
+		: [];
 </script>
 
 <button
@@ -84,7 +93,7 @@
 						class="rounded-full size-5 flex items-center"
 						loading="lazy"
 						on:error={(e) => {
-							e.currentTarget.src = '/favicon.png';
+							(e.currentTarget as HTMLImageElement).src = '/favicon.png';
 						}}
 					/>
 				</Tooltip>
@@ -97,6 +106,16 @@
 					</div>
 				</Tooltip>
 			</div>
+
+			{#if runtimeBadges.length > 0}
+				<div class="shrink-0 flex items-center gap-1">
+					{#each runtimeBadges as badge}
+						<span class="rounded-full border border-gray-200 dark:border-gray-700 px-1.5 py-0.5 text-[9px] font-medium uppercase text-gray-600 dark:text-gray-300">
+							{badge}
+						</span>
+					{/each}
+				</div>
+			{/if}
 
 			<div class=" shrink-0 flex items-center gap-2">
 				{#if item.model.owned_by === 'ollama'}
@@ -132,8 +151,8 @@
 									<span class="relative flex size-2">
 										<span
 											class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"
-										/>
-										<span class="relative inline-flex rounded-full size-2 bg-green-500" />
+										></span>
+										<span class="relative inline-flex rounded-full size-2 bg-green-500"></span>
 									</span>
 								</div>
 							</Tooltip>
@@ -147,7 +166,7 @@
 					{#key item.model.id}
 						<Tooltip elementId="tags-{item.model.id}">
 							<div slot="tooltip" id="tags-{item.model.id}">
-								{#each item.model?.tags.sort((a, b) => a.name.localeCompare(b.name)) as tag}
+								{#each item.model?.tags.sort((a: any, b: any) => a.name.localeCompare(b.name)) as tag}
 									<Tooltip content={tag.name} className="flex-shrink-0">
 										<div class=" text-xs font-medium rounded-sm uppercase text-white">
 											{tag.name}
@@ -257,6 +276,9 @@
 			model={item.model}
 			{pinModelHandler}
 			{deleteModelHandler}
+			unregisterRuntimeRegistrationHandler={() => {
+				runtimeUnregisterHandler(item.model);
+			}}
 			copyLinkHandler={() => {
 				copyLinkHandler(item.model);
 			}}

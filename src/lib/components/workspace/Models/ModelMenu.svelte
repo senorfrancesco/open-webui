@@ -31,6 +31,8 @@
 	export let hideHandler: Function;
 	export let pinModelHandler: Function;
 	export let deleteHandler: Function;
+	export let runtimeManaged: boolean = false;
+	export let runtimeUnregisterHandler: Function = () => {};
 	export let onClose: Function;
 
 	export let writeAccess: boolean = true;
@@ -203,6 +205,20 @@
 
 			{#if writeAccess}
 				<hr class="border-gray-50/30 dark:border-gray-800/30 my-1" />
+
+				{#if $currentUser?.role === 'admin' && runtimeManaged}
+					<button
+						class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full text-rose-600 dark:text-rose-400"
+						on:click={() => {
+							runtimeUnregisterHandler();
+						}}
+					>
+						<GarbageBin />
+						<div class="flex items-center">{$i18n.t('Delete runtime registration')}</div>
+					</button>
+
+					<hr class="border-gray-50/30 dark:border-gray-800/30 my-1" />
+				{/if}
 
 				<button
 					class="select-none flex gap-2 items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-xl w-full"

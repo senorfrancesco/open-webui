@@ -748,12 +748,22 @@ async def get_file_content_by_id(
                 )
         else:
             # File path doesn’t exist, return the content as .txt if possible
-            file_content = file.data.get('content', '')
-            file_name = file.filename
+            file_data = file.data if isinstance(file.data, dict) else {}
+            file_content = file_data.get('content')
+
+            if isinstance(file_content, bytes):
+                payload = file_content
+            elif isinstance(file_content, str):
+                payload = file_content.encode('utf-8')
+            elif file_content is None:
+                payload = b''
+            else:
+                payload = str(file_content).encode('utf-8')
 
             # Create a generator that encodes the file content
             def generator():
-                yield file_content.encode('utf-8')
+                if payload:
+                    yield payload
 
             return StreamingResponse(
                 generator(),

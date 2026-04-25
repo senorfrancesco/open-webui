@@ -17,7 +17,7 @@
 	import { config, settings } from '$lib/stores';
 	import Link from '$lib/components/icons/Link.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext('i18n') as any;
 
 	export let user;
 	export let model;
@@ -27,10 +27,19 @@
 	export let pinModelHandler: Function;
 	export let copyLinkHandler: Function;
 	export let cloneHandler: Function;
+	export let runtimeManaged: boolean = false;
+	export let runtimeUnregisterHandler: Function = () => {};
 
 	export let onClose: Function;
 
 	let show = false;
+
+	const isPinnedModel = (modelId: string) => {
+		const pinnedModels: string[] = Array.isArray($settings?.pinnedModels)
+			? $settings.pinnedModels
+			: [];
+		return pinnedModels.includes(modelId);
+	};
 </script>
 
 <Dropdown
@@ -107,14 +116,14 @@
 					pinModelHandler(model?.id);
 				}}
 			>
-				{#if ($settings?.pinnedModels ?? []).includes(model?.id)}
+				{#if isPinnedModel(model?.id)}
 					<PinSlash />
 				{:else}
 					<Pin />
 				{/if}
 
 				<div class="flex items-center">
-					{#if ($settings?.pinnedModels ?? []).includes(model?.id)}
+					{#if isPinnedModel(model?.id)}
 						{$i18n.t('Hide from Sidebar')}
 					{:else}
 						{$i18n.t('Keep in Sidebar')}
@@ -156,6 +165,21 @@
 
 				<div class="flex items-center">{$i18n.t('Export')}</div>
 			</button>
+
+			{#if user?.role === 'admin' && runtimeManaged}
+				<hr class="border-gray-100 dark:border-gray-800 my-1" />
+
+				<button
+					class="select-none flex gap-2 items-center px-3 py-1.5 text-sm font-medium cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-md w-full text-rose-600 dark:text-rose-400"
+					on:click={() => {
+						runtimeUnregisterHandler();
+						show = false;
+					}}
+				>
+					<GarbageBin />
+					<div class="flex items-center">{$i18n.t('Delete runtime registration')}</div>
+				</button>
+			{/if}
 		</div>
 	</div>
 </Dropdown>

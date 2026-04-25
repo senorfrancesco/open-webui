@@ -1,17 +1,22 @@
 <script lang="ts">
 	import { marked } from 'marked';
+	// @ts-ignore file-saver has no local declaration in this fork.
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
 	import { onMount, getContext, tick } from 'svelte';
-	const i18n = getContext('i18n');
+	const i18n = getContext('i18n') as any;
 
 	import { WEBUI_NAME, config, mobile, models as _models, settings, user } from '$lib/stores';
 	import {
 		createNewModel,
 		deleteAllModels,
 		getBaseModels,
+		getRuntimeModelCatalog,
+		getRuntimeRegistrationMeta,
+		isDynamicRuntimeModel,
 		toggleModelById,
+		unregisterRuntimeManagedModel,
 		updateModelById,
 		importModels
 	} from '$lib/apis/models';
@@ -35,6 +40,7 @@
 	import Wrench from '$lib/components/icons/Wrench.svelte';
 	import Download from '$lib/components/icons/Download.svelte';
 	import ManageModelsModal from './Models/ManageModelsModal.svelte';
+	import RuntimeModelFolderModal from '$lib/components/chat/ModelSelector/RuntimeModelFolderModal.svelte';
 	import ModelMenu from '$lib/components/admin/Settings/Models/ModelMenu.svelte';
 	import EllipsisHorizontal from '$lib/components/icons/EllipsisHorizontal.svelte';
 	import EyeSlash from '$lib/components/icons/EyeSlash.svelte';
@@ -51,30 +57,125 @@
 	let shiftKey = false;
 
 	let modelsImportInProgress = false;
-	let importFiles;
+	let importFiles: FileList | null = null;
 	let modelsImportInputElement: HTMLInputElement;
 
-	let models = null;
+	type ModelRecord = Record<string, any>;
 
-	let workspaceModels = null;
-	let baseModels = null;
+	let models: ModelRecord[] | null = null;
 
-	let filteredModels = [];
-	let selectedModelId = null;
+	let workspaceModels: ModelRecord[] = [];
+	let baseModels: ModelRecord[] = [];
+
+	let filteredModels: ModelRecord[] = [];
+	let selectedModelId: string | null = null;
 
 	let showConfigModal = false;
 	let showManageModal = false;
+	let showRuntimeModelFolderModal = false;
 
 	let viewOption = ''; // '' = All, 'enabled', 'disabled', 'visible', 'hidden'
 
 	const perPage = 30;
 	let currentPage = 1;
 
-	const isPublicModel = (model) => {
+	const isPublicModel = (model: ModelRecord) => {
 		return (model?.access_grants ?? []).some(
-			(g) => g.principal_type === 'user' && g.principal_id === '*' && g.permission === 'read'
+			(g: ModelRecord) =>
+				g.principal_type === 'user' && g.principal_id === '*' && g.permission === 'read'
 		);
 	};
+
+	const applyRuntimeCatalogMetadata = (model: ModelRecord, runtimeModel: ModelRecord | null) => {
+		if (!runtimeModel) return model;
+
+		const runtimeBadges = Array.isArray(runtimeModel?.runtime_badges)
+			? runtimeModel.runtime_badges.filter(Boolean)
+			: [];
+
+		return {
+			...model,
+			info: {
+				...(model?.info ?? {}),
+				meta: {
+					...(model?.info?.meta ?? {}),
+					runtime_type: runtimeModel.runtime_type,
+					kind: runtimeModel.kind,
+					catalog_status: runtimeModel.status,
+					catalog_origin: runtimeModel.catalog_origin,
+					user_selectable: runtimeModel.user_selectable,
+					runtime_badges: runtimeBadges
+				}
+			}
+		};
+	};
+
+	const mergeWorkspaceModel = (
+		baseModel: ModelRecord,
+		workspaceModel: ModelRecord | null,
+		runtimeModel: ModelRecord | null
+	) => {
+		const baseWithRuntime = applyRuntimeCatalogMetadata(baseModel, runtimeModel);
+
+		if (!workspaceModel) {
+			return {
+				...baseWithRuntime,
+				id: baseWithRuntime.id,
+				name: baseWithRuntime.name,
+				is_active: true
+			};
+		}
+
+		return {
+			...baseWithRuntime,
+			...workspaceModel,
+			info: {
+				...(baseWithRuntime?.info ?? {}),
+				...(workspaceModel?.info ?? {}),
+				meta: {
+					...(baseWithRuntime?.info?.meta ?? {}),
+					...(workspaceModel?.info?.meta ?? {})
+				}
+			}
+		};
+	};
+
+	const modelOriginLabel = (model: ModelRecord) => {
+		const runtimeRegistration = getRuntimeRegistrationMeta(model);
+		if (runtimeRegistration?.catalog_origin === 'dynamic') return $i18n.t('Runtime');
+		if (runtimeRegistration?.catalog_origin === 'static') return $i18n.t('Static');
+		if (Object.keys(model ?? {}).includes('base_model_id')) return $i18n.t('Workspace');
+		return null;
+	};
+
+	const modelOriginBadgeType = (model: ModelRecord) => {
+		const runtimeRegistration = getRuntimeRegistrationMeta(model);
+		if (runtimeRegistration?.catalog_origin === 'dynamic') return 'success';
+		if (runtimeRegistration?.catalog_origin === 'static') return 'info';
+		return 'muted';
+	};
+
+	const modelRuntimeBadges = (model: ModelRecord) => {
+		const runtimeBadges = model?.info?.meta?.runtime_badges;
+		return Array.isArray(runtimeBadges)
+			? [...new Set(runtimeBadges.filter(Boolean))].slice(0, 3)
+			: [];
+	};
+
+	const errorMessage = (error: unknown) => {
+		if (error && typeof error === 'object' && 'detail' in error) {
+			return `${(error as { detail?: unknown }).detail}`;
+		}
+
+		return `${error}`;
+	};
+
+	const directConnections = () =>
+		$config?.features?.enable_direct_connections ? ($settings?.directConnections ?? null) : null;
+	const runtimeModelsEnabled = () =>
+		Boolean($config?.features?.enable_agent_navigator_runtime_models);
+
+	const getSelectedModel = (): any => models?.find((model) => model.id === selectedModelId);
 
 	$: if (models) {
 		filteredModels = models
@@ -165,7 +266,7 @@
 		await init();
 	};
 
-	const downloadModels = async (models) => {
+	const downloadModels = async (models: ModelRecord[]) => {
 		let blob = new Blob([JSON.stringify(models)], {
 			type: 'application/json'
 		});
@@ -178,37 +279,35 @@
 		workspaceModels = await getBaseModels(localStorage.token);
 		baseModels = await getModels(localStorage.token, null, true);
 
-		models = baseModels.map((m) => {
-			const workspaceModel = workspaceModels.find((wm) => wm.id === m.id);
+		const runtimeCatalog = runtimeModelsEnabled()
+			? await getRuntimeModelCatalog(localStorage.token).catch((error) => {
+					console.debug('runtime model catalog unavailable', error);
+					return null;
+				})
+			: null;
+		const runtimeCatalogById = Object.fromEntries(
+			(runtimeCatalog?.models ?? [])
+				.filter((model: ModelRecord) => model?.model_id)
+				.map((model: ModelRecord) => [model.model_id, model])
+		);
 
-			if (workspaceModel) {
-				return {
-					...m,
-					...workspaceModel
-				};
-			} else {
-				return {
-					...m,
-					id: m.id,
-					name: m.name,
-
-					is_active: true
-				};
-			}
+		models = baseModels.map((m: ModelRecord) => {
+			const workspaceModel = workspaceModels.find((wm: ModelRecord) => wm.id === m.id) ?? null;
+			const runtimeModel = runtimeCatalogById[m.id];
+			return mergeWorkspaceModel(m, workspaceModel, runtimeModel ?? null);
 		});
 
-		_models.set(
-			await getModels(
-				localStorage.token,
-				$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
-			)
-		);
+		_models.set(await getModels(localStorage.token, directConnections(), false, false, runtimeModelsEnabled()));
 	};
 
-	const upsertModelHandler = async (model, overrides = {}, showToast = true) => {
+	const upsertModelHandler = async (
+		model: ModelRecord,
+		overrides: ModelRecord = {},
+		showToast = true
+	) => {
 		model = { ...model, base_model_id: null, ...overrides };
 
-		if (workspaceModels.find((m) => m.id === model.id)) {
+		if (workspaceModels.find((m: ModelRecord) => m.id === model.id)) {
 			const res = await updateModelById(localStorage.token, model.id, model).catch((error) => {
 				return null;
 			});
@@ -236,7 +335,7 @@
 		}
 	};
 
-	const toggleModelHandler = async (model) => {
+	const toggleModelHandler = async (model: ModelRecord) => {
 		if (!Object.keys(model).includes('base_model_id')) {
 			await createNewModel(localStorage.token, {
 				id: model.id,
@@ -254,15 +353,10 @@
 		}
 
 		// await init();
-		_models.set(
-			await getModels(
-				localStorage.token,
-				$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
-			)
-		);
+		_models.set(await getModels(localStorage.token, directConnections(), false, false, runtimeModelsEnabled()));
 	};
 
-	const hideModelHandler = async (model) => {
+	const hideModelHandler = async (model: ModelRecord) => {
 		model.meta = {
 			...model.meta,
 			hidden: !(model?.meta?.hidden ?? false)
@@ -283,7 +377,23 @@
 		);
 	};
 
-	const copyLinkHandler = async (model) => {
+	const unregisterRuntimeRegistrationHandler = async (model: ModelRecord) => {
+		try {
+			const result = await unregisterRuntimeManagedModel(localStorage.token, model);
+			toast.success(
+				result?.removed_workspace_record
+					? $i18n.t('Runtime registration and model settings were removed')
+					: $i18n.t('Runtime registration removed')
+			);
+			await init();
+		} catch (error) {
+			toast.error(errorMessage(error));
+		}
+
+		_models.set(await getModels(localStorage.token, directConnections(), false, true, runtimeModelsEnabled()));
+	};
+
+	const copyLinkHandler = async (model: ModelRecord) => {
 		const baseUrl = window.location.origin;
 		const res = await copyToClipboard(`${baseUrl}/?model=${encodeURIComponent(model.id)}`);
 
@@ -294,7 +404,7 @@
 		}
 	};
 
-	const cloneHandler = async (model) => {
+	const cloneHandler = async (model: ModelRecord) => {
 		sessionStorage.model = JSON.stringify({
 			...model,
 			base_model_id: model.id,
@@ -304,15 +414,17 @@
 		goto('/workspace/models/create');
 	};
 
-	const exportModelHandler = async (model) => {
+	const exportModelHandler = async (model: ModelRecord) => {
 		let blob = new Blob([JSON.stringify([model])], {
 			type: 'application/json'
 		});
 		saveAs(blob, `${model.id}-${Date.now()}.json`);
 	};
 
-	const pinModelHandler = async (modelId) => {
-		let pinnedModels = $settings?.pinnedModels ?? [];
+	const pinModelHandler = async (modelId: string) => {
+		let pinnedModels: string[] = Array.isArray($settings?.pinnedModels)
+			? [...$settings.pinnedModels]
+			: [];
 
 		if (pinnedModels.includes(modelId)) {
 			pinnedModels = pinnedModels.filter((id) => id !== modelId);
@@ -320,25 +432,27 @@
 			pinnedModels = [...new Set([...pinnedModels, modelId])];
 		}
 
-		settings.set({ ...$settings, pinnedModels: pinnedModels });
+		settings.set({ ...($settings as any), pinnedModels });
 		await updateUserSettings(localStorage.token, { ui: $settings });
 	};
 
-	onMount(async () => {
-		await init();
-		const id = $page.url.searchParams.get('id');
+	onMount(() => {
+		void (async () => {
+			await init();
+			const id = $page.url.searchParams.get('id');
 
-		if (id) {
-			selectedModelId = id;
-		}
+			if (id) {
+				selectedModelId = id;
+			}
+		})();
 
-		const onKeyDown = (event) => {
+		const onKeyDown = (event: KeyboardEvent) => {
 			if (event.key === 'Shift') {
 				shiftKey = true;
 			}
 		};
 
-		const onKeyUp = (event) => {
+		const onKeyUp = (event: KeyboardEvent) => {
 			if (event.key === 'Shift') {
 				shiftKey = false;
 			}
@@ -362,6 +476,9 @@
 
 <ModelSettingsModal bind:show={showConfigModal} initHandler={init} />
 <ManageModelsModal bind:show={showManageModal} />
+{#if runtimeModelsEnabled()}
+	<RuntimeModelFolderModal bind:show={showRuntimeModelFolderModal} on:registered={init} />
+{/if}
 
 {#if models !== null}
 	{#if selectedModelId === null}
@@ -379,6 +496,20 @@
 
 				<div class="flex w-full justify-end gap-1.5">
 					{#if $user?.role === 'admin'}
+						{#if runtimeModelsEnabled()}
+						<button
+							class="flex text-xs items-center space-x-1 px-3 py-1.5 rounded-xl bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-gray-200 transition"
+							type="button"
+							on:click={() => {
+								showRuntimeModelFolderModal = true;
+							}}
+						>
+							<div class=" self-center font-medium line-clamp-1">
+								{$i18n.t('Add from folder')}
+							</div>
+						</button>
+						{/if}
+
 						<input
 							id="models-import-input"
 							bind:this={modelsImportInputElement}
@@ -387,13 +518,13 @@
 							accept=".json"
 							hidden
 							on:change={() => {
-								if (importFiles.length > 0) {
+								if (importFiles && importFiles.length > 0) {
 									const reader = new FileReader();
-									reader.onload = async (event) => {
+									reader.onload = async (event: ProgressEvent<FileReader>) => {
 										modelsImportInProgress = true;
 
 										try {
-											const models = JSON.parse(String(event.target.result));
+											const models = JSON.parse(String(event.target?.result ?? ''));
 											const res = await importModels(localStorage.token, models);
 
 											if (res) {
@@ -403,7 +534,7 @@
 												toast.error($i18n.t('Failed to import models'));
 											}
 										} catch (e) {
-											toast.error(e?.detail ?? $i18n.t('Invalid JSON file'));
+											toast.error(errorMessage(e) || $i18n.t('Invalid JSON file'));
 											console.error(e);
 										}
 
@@ -432,7 +563,7 @@
 						<button
 							class="flex text-xs items-center space-x-1 px-3 py-1.5 rounded-xl bg-gray-50 hover:bg-gray-100 dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-gray-200 transition"
 							on:click={async () => {
-								downloadModels(models);
+								downloadModels(models ?? []);
 							}}
 						>
 							<div class=" self-center font-medium line-clamp-1">
@@ -449,7 +580,7 @@
 						}}
 					>
 						<div class=" self-center font-medium line-clamp-1">
-							{$i18n.t('Manage')}
+							{$i18n.t('Manage Ollama')}
 						</div>
 					</button>
 
@@ -597,7 +728,7 @@
 											alt="modelfile profile"
 											class=" rounded-full w-full h-auto object-cover"
 											on:error={(e) => {
-												e.target.src = '/favicon.png';
+												(e.target as HTMLImageElement).src = '/favicon.png';
 											}}
 										/>
 									</div>
@@ -621,23 +752,20 @@
 											{model.name}
 
 											<Badge
-												type={(model?.access_grants ?? []).some(
-													(g) =>
-														g.principal_type === 'user' &&
-														g.principal_id === '*' &&
-														g.permission === 'read'
-												)
-													? 'success'
-													: 'muted'}
-												content={(model?.access_grants ?? []).some(
-													(g) =>
-														g.principal_type === 'user' &&
-														g.principal_id === '*' &&
-														g.permission === 'read'
-												)
-													? $i18n.t('Public')
-													: $i18n.t('Private')}
+												type={isPublicModel(model) ? 'success' : 'muted'}
+												content={isPublicModel(model) ? $i18n.t('Public') : $i18n.t('Private')}
 											/>
+
+											{#if modelOriginLabel(model)}
+												<Badge
+													type={modelOriginBadgeType(model)}
+													content={modelOriginLabel(model)}
+												/>
+											{/if}
+
+											{#each modelRuntimeBadges(model) as badge}
+												<Badge type="muted" content={badge} />
+											{/each}
 										</div>
 									</Tooltip>
 									<div
@@ -712,6 +840,10 @@
 										cloneHandler={() => {
 											cloneHandler(model);
 										}}
+										runtimeManaged={runtimeModelsEnabled() && isDynamicRuntimeModel(model)}
+										runtimeUnregisterHandler={() => {
+											unregisterRuntimeRegistrationHandler(model);
+										}}
 										onClose={() => {}}
 									>
 										<button
@@ -760,9 +892,9 @@
 	{:else}
 		<ModelEditor
 			edit
-			model={models.find((m) => m.id === selectedModelId)}
+			model={getSelectedModel()}
 			preset={false}
-			onSubmit={(model) => {
+			onSubmit={(model: ModelRecord) => {
 				console.log(model);
 				upsertModelHandler(model);
 				selectedModelId = null;
