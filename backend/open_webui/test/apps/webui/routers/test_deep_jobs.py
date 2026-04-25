@@ -30,6 +30,7 @@ def _load_middleware_function_from_source(function_name: str):
     namespace = {
         'html': html,
         'json': json,
+        '_OPENAI_TOOL_DISPLAY_NAMES': {},
         'split_content_and_whitespace': lambda content: (content, ''),
         'is_opening_code_block': lambda content: False,
     }
