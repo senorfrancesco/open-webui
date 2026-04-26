@@ -10,6 +10,10 @@
 
 	import AdvancedParams from './Advanced/AdvancedParams.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
+	import {
+		requiresRuntimeModelRestart,
+		restartActiveRuntimeModel
+	} from '$lib/utils/runtimeModelParams';
 	export let saveSettings: Function;
 	export let getModels: Function;
 
@@ -23,6 +27,8 @@
 	let system = '';
 
 	let showAdvanced = false;
+	let savedParams: Record<string, any> = {};
+	let settingsApplying = false;
 
 	const toggleNotification = async () => {
 		const permission = await Notification.requestPermission();
@@ -39,11 +45,12 @@
 		}
 	};
 
-	let params = {
+	const defaultParams = {
 		// Advanced
 		stream_response: null,
 		stream_delta_chunk_size: null,
 		function_calling: null,
+		reasoning_tags: null,
 		seed: null,
 		temperature: null,
 		reasoning_effort: null,
@@ -64,47 +71,90 @@
 		num_batch: null,
 		num_keep: null,
 		max_tokens: null,
-		num_gpu: null
+		use_mmap: null,
+		use_mlock: null,
+		num_thread: null,
+		num_gpu: null,
+		think: null,
+		keep_alive: null,
+		format: null
+	};
+	let params: { [K in keyof typeof defaultParams]: any } & Record<string, any> = {
+		...defaultParams
 	};
 
+	const buildSavedParams = () => ({
+		stream_response: params.stream_response !== null ? params.stream_response : undefined,
+		stream_delta_chunk_size:
+			params.stream_delta_chunk_size !== null ? params.stream_delta_chunk_size : undefined,
+		function_calling: params.function_calling !== null ? params.function_calling : undefined,
+		seed: (params.seed !== null ? params.seed : undefined) ?? undefined,
+		stop: params.stop ? params.stop.split(',').filter((e: string) => e) : undefined,
+		temperature: params.temperature !== null ? params.temperature : undefined,
+		reasoning_effort: params.reasoning_effort !== null ? params.reasoning_effort : undefined,
+		logit_bias: params.logit_bias !== null ? params.logit_bias : undefined,
+		frequency_penalty: params.frequency_penalty !== null ? params.frequency_penalty : undefined,
+		presence_penalty: params.presence_penalty !== null ? params.presence_penalty : undefined,
+		repeat_penalty: params.repeat_penalty !== null ? params.repeat_penalty : undefined,
+		repeat_last_n: params.repeat_last_n !== null ? params.repeat_last_n : undefined,
+		mirostat: params.mirostat !== null ? params.mirostat : undefined,
+		mirostat_eta: params.mirostat_eta !== null ? params.mirostat_eta : undefined,
+		mirostat_tau: params.mirostat_tau !== null ? params.mirostat_tau : undefined,
+		top_k: params.top_k !== null ? params.top_k : undefined,
+		top_p: params.top_p !== null ? params.top_p : undefined,
+		min_p: params.min_p !== null ? params.min_p : undefined,
+		tfs_z: params.tfs_z !== null ? params.tfs_z : undefined,
+		num_ctx: params.num_ctx !== null ? params.num_ctx : undefined,
+		num_batch: params.num_batch !== null ? params.num_batch : undefined,
+		num_keep: params.num_keep !== null ? params.num_keep : undefined,
+		max_tokens: params.max_tokens !== null ? params.max_tokens : undefined,
+		use_mmap: params.use_mmap !== null ? params.use_mmap : undefined,
+		use_mlock: params.use_mlock !== null ? params.use_mlock : undefined,
+		num_thread: params.num_thread !== null ? params.num_thread : undefined,
+		num_gpu: params.num_gpu !== null ? params.num_gpu : undefined,
+		think: params.think !== null ? params.think : undefined,
+		keep_alive: params.keep_alive !== null ? params.keep_alive : undefined,
+		format: params.format !== null ? params.format : undefined
+	});
+
+	$: runtimeModelsEnabled = Boolean($config?.features?.enable_agent_navigator_runtime_models);
+	$: saveRequiresRuntimeRestart =
+		runtimeModelsEnabled &&
+		$user?.role === 'admin' &&
+		requiresRuntimeModelRestart(savedParams, buildSavedParams());
+
 	const saveHandler = async () => {
-		saveSettings({
-			system: system !== '' ? system : undefined,
-			params: {
-				stream_response: params.stream_response !== null ? params.stream_response : undefined,
-				stream_delta_chunk_size:
-					params.stream_delta_chunk_size !== null ? params.stream_delta_chunk_size : undefined,
-				function_calling: params.function_calling !== null ? params.function_calling : undefined,
-				seed: (params.seed !== null ? params.seed : undefined) ?? undefined,
-				stop: params.stop ? params.stop.split(',').filter((e) => e) : undefined,
-				temperature: params.temperature !== null ? params.temperature : undefined,
-				reasoning_effort: params.reasoning_effort !== null ? params.reasoning_effort : undefined,
-				logit_bias: params.logit_bias !== null ? params.logit_bias : undefined,
-				frequency_penalty: params.frequency_penalty !== null ? params.frequency_penalty : undefined,
-				presence_penalty: params.frequency_penalty !== null ? params.frequency_penalty : undefined,
-				repeat_penalty: params.frequency_penalty !== null ? params.frequency_penalty : undefined,
-				repeat_last_n: params.repeat_last_n !== null ? params.repeat_last_n : undefined,
-				mirostat: params.mirostat !== null ? params.mirostat : undefined,
-				mirostat_eta: params.mirostat_eta !== null ? params.mirostat_eta : undefined,
-				mirostat_tau: params.mirostat_tau !== null ? params.mirostat_tau : undefined,
-				top_k: params.top_k !== null ? params.top_k : undefined,
-				top_p: params.top_p !== null ? params.top_p : undefined,
-				min_p: params.min_p !== null ? params.min_p : undefined,
-				tfs_z: params.tfs_z !== null ? params.tfs_z : undefined,
-				num_ctx: params.num_ctx !== null ? params.num_ctx : undefined,
-				num_batch: params.num_batch !== null ? params.num_batch : undefined,
-				num_keep: params.num_keep !== null ? params.num_keep : undefined,
-				max_tokens: params.max_tokens !== null ? params.max_tokens : undefined,
-				use_mmap: params.use_mmap !== null ? params.use_mmap : undefined,
-				use_mlock: params.use_mlock !== null ? params.use_mlock : undefined,
-				num_thread: params.num_thread !== null ? params.num_thread : undefined,
-				num_gpu: params.num_gpu !== null ? params.num_gpu : undefined,
-				think: params.think !== null ? params.think : undefined,
-				keep_alive: params.keep_alive !== null ? params.keep_alive : undefined,
-				format: params.format !== null ? params.format : undefined
+		if (settingsApplying) {
+			return;
+		}
+		settingsApplying = true;
+		const nextParams = buildSavedParams();
+		let settingsSaved = false;
+		try {
+			await saveSettings({
+				system: system !== '' ? system : undefined,
+				params: nextParams
+			});
+			settingsSaved = true;
+			if (saveRequiresRuntimeRestart) {
+				const result = await restartActiveRuntimeModel(localStorage.token, {
+					onFailed: (job) => toast.error(job?.error ?? $i18n.t('Model load failed')),
+					onCancelled: () => toast.info($i18n.t('Model load cancelled'))
+				});
+				if (result.restarted) {
+					toast.success($i18n.t('Active model restart started.'));
+				}
 			}
-		});
-		dispatch('save');
+			savedParams = structuredClone(nextParams);
+			dispatch('save');
+		} catch (err) {
+			console.error(err);
+			if (saveRequiresRuntimeRestart && settingsSaved) {
+				toast.error($i18n.t('Settings saved, but the active model could not be restarted.'));
+			}
+		} finally {
+			settingsApplying = false;
+		}
 	};
 
 	onMount(async () => {
@@ -121,6 +171,7 @@
 
 		params = { ...params, ...$settings.params };
 		params.stop = $settings?.params?.stop ? ($settings?.params?.stop ?? []).join(',') : null;
+		savedParams = structuredClone(buildSavedParams());
 	});
 
 	const applyTheme = (_theme: string) => {
@@ -293,7 +344,7 @@
 						($settings.highContrastMode
 							? ' p-2.5 border-2 border-gray-300 dark:border-gray-700 rounded-lg bg-transparent text-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 overflow-y-hidden'
 							: '  dark:text-gray-300 ')}
-					rows="4"
+					rows={4}
 					placeholder={$i18n.t('Enter system prompt here')}
 				/>
 			</div>
@@ -324,12 +375,15 @@
 
 	<div class="flex justify-end pt-3 text-sm font-medium">
 		<button
-			class="px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full"
+			class="px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full {settingsApplying
+				? 'cursor-not-allowed opacity-60'
+				: ''}"
+			disabled={settingsApplying}
 			on:click={() => {
 				saveHandler();
 			}}
 		>
-			{$i18n.t('Save')}
+			{saveRequiresRuntimeRestart ? $i18n.t('Save and restart model') : $i18n.t('Save')}
 		</button>
 	</div>
 </div>

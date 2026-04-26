@@ -312,6 +312,23 @@ def test_load_route_forwards_model_id_and_device_mode(monkeypatch):
     assert captured == {'model_id': 'qwen-14b-llm', 'device_mode': 'hybrid'}
 
 
+def test_stop_runtime_model_route_forwards_model_id(monkeypatch):
+    captured = {}
+
+    async def fake_stop(request, model_id):
+        captured['model_id'] = model_id
+        return {'status': 'success', 'action': 'stop', 'model': {'id': model_id}}
+
+    monkeypatch.setattr(runtime_models_service, 'stop_model', fake_stop)
+
+    client = TestClient(_build_app())
+    response = client.post('/api/v1/runtime-models/qwen-14b-llm/stop')
+
+    assert response.status_code == 200
+    assert response.json()['action'] == 'stop'
+    assert captured == {'model_id': 'qwen-14b-llm'}
+
+
 def test_load_job_status_route_is_available_for_verified_user(monkeypatch):
     async def fake_get_load_job(request, job_id):
         return {'job_id': job_id, 'state': 'loading', 'percent': 42.5}
@@ -355,3 +372,18 @@ def test_load_job_service_forwards_to_ums(monkeypatch):
 
     assert result == {'job_id': 'job-1', 'state': 'loading'}
     assert calls == [{'method': 'GET', 'endpoint_path': '/model-load-jobs/job-1'}]
+
+
+def test_stop_model_service_forwards_to_ums(monkeypatch):
+    calls = []
+
+    async def fake_request_json(method, endpoint_path, **kwargs):
+        calls.append({'method': method, 'endpoint_path': endpoint_path, **kwargs})
+        return {'status': 'success', 'action': 'stop'}
+
+    monkeypatch.setattr(runtime_models_service, '_request_json', fake_request_json)
+
+    result = asyncio.run(runtime_models_service.stop_model(SimpleNamespace(), 'qwen-14b-llm'))
+
+    assert result == {'status': 'success', 'action': 'stop'}
+    assert calls == [{'method': 'POST', 'endpoint_path': '/models/qwen-14b-llm/stop', 'payload': {}}]

@@ -322,6 +322,12 @@ async def load_model(request: Request, model_id: str, device_mode: Optional[str]
     return await _request_json('POST', f'/models/{encoded_model_id}/load', payload=payload)
 
 
+async def stop_model(request: Request, model_id: str) -> Dict[str, Any]:
+    assert_enabled(request)
+    encoded_model_id = quote(str(model_id or '').strip(), safe='')
+    return await _request_json('POST', f'/models/{encoded_model_id}/stop', payload={})
+
+
 async def get_load_job(request: Request, job_id: str) -> Dict[str, Any]:
     assert_enabled(request)
     encoded_job_id = quote(str(job_id or '').strip(), safe='')

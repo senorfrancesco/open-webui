@@ -10,6 +10,10 @@
 	import { deleteAllModels } from '$lib/apis/models';
 	import { getModelsConfig, setModelsConfig, setDefaultPromptSuggestions } from '$lib/apis/configs';
 	import { getBackendConfig } from '$lib/apis';
+	import {
+		requiresRuntimeModelRestart,
+		restartActiveRuntimeModel
+	} from '$lib/utils/runtimeModelParams';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
@@ -60,6 +64,7 @@
 	let defaultCapabilities = {};
 	let defaultFeatureIds = [];
 	let defaultParams = {};
+	let savedDefaultParams = {};
 	let builtinTools = {};
 	let promptSuggestions = [];
 
@@ -108,9 +113,15 @@
 			builtinTools = {};
 		}
 		defaultParams = config?.DEFAULT_MODEL_PARAMS ?? {};
+		savedDefaultParams = structuredClone(defaultParams);
 
 		promptSuggestions = $_config?.default_prompt_suggestions ?? [];
 	};
+
+	$: runtimeModelsEnabled = Boolean($_config?.features?.enable_agent_navigator_runtime_models);
+	$: saveRequiresRuntimeRestart =
+		runtimeModelsEnabled && requiresRuntimeModelRestart(savedDefaultParams, defaultParams);
+
 	const submitHandler = async () => {
 		loading = true;
 
@@ -134,6 +145,21 @@
 			promptSuggestions = promptSuggestions.filter((p) => p.content !== '');
 			promptSuggestions = await setDefaultPromptSuggestions(localStorage.token, promptSuggestions);
 			await _config.set(await getBackendConfig());
+			if (saveRequiresRuntimeRestart) {
+				try {
+					const restart = await restartActiveRuntimeModel(localStorage.token, {
+						onFailed: (job) => toast.error(job?.error ?? $i18n.t('Model load failed')),
+						onCancelled: () => toast.info($i18n.t('Model load cancelled'))
+					});
+					if (restart.restarted) {
+						toast.success($i18n.t('Active model restart started.'));
+					}
+				} catch (err) {
+					console.error(err);
+					toast.error($i18n.t('Models saved, but the active model could not be restarted.'));
+				}
+			}
+			savedDefaultParams = structuredClone(defaultParams);
 
 			toast.success($i18n.t('Models configuration saved successfully'));
 			initHandler();
@@ -442,7 +468,7 @@
 										type="submit"
 										disabled={loading}
 									>
-										{$i18n.t('Save')}
+										{saveRequiresRuntimeRestart ? $i18n.t('Save and restart model') : $i18n.t('Save')}
 
 										{#if loading}
 											<span class="shrink-0">
