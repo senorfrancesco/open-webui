@@ -53,6 +53,7 @@ from open_webui.env import (
     FORWARD_SESSION_INFO_HEADER_CHAT_ID,
     FORWARD_SESSION_INFO_HEADER_LOCALE,
     FORWARD_SESSION_INFO_HEADER_MESSAGE_ID,
+    FORWARD_SESSION_INFO_HEADER_MODEL_ID,
     REDIS_KEY_PREFIX,
 )
 from open_webui.utils.headers import include_user_info_headers
@@ -105,6 +106,76 @@ import copy
 from open_webui.utils.access_control import has_permission
 
 log = logging.getLogger(__name__)
+
+LLM_TOOLS_PLATFORM_BOOTSTRAP_ID = 'llm_tools_platform_openapi_tool_server'
+LLM_TOOLS_PLATFORM_TOOL_SERVER_NAME = 'llm-tools-platform OpenAPI Tool Server'
+
+
+def _is_llm_tools_platform_tool_server(server_data: dict | None, connection: dict | None) -> bool:
+    server_data = server_data or {}
+    connection = connection or {}
+    config = connection.get('config') or {}
+    if str(config.get('bootstrap_id') or '').strip() == LLM_TOOLS_PLATFORM_BOOTSTRAP_ID:
+        return True
+
+    path = str(connection.get('path') or '').strip()
+    if 'tool-server/openapi.json' in path:
+        return True
+
+    info = server_data.get('info') or {}
+    openapi_info = (server_data.get('openapi') or {}).get('info') or {}
+    for value in (
+        config.get('name'),
+        info.get('name'),
+        info.get('title'),
+        openapi_info.get('name'),
+        openapi_info.get('title'),
+    ):
+        if str(value or '').strip() == LLM_TOOLS_PLATFORM_TOOL_SERVER_NAME:
+            return True
+
+    return False
+
+
+def _normalize_forwarded_model_id(value: Any) -> str | None:
+    model_id = str(value or '').strip()
+    if not model_id or model_id == 'llm-tools-platform':
+        return None
+    return model_id
+
+
+def _resolve_forwarded_model_id(metadata: dict | None) -> str | None:
+    metadata = metadata or {}
+    return _normalize_forwarded_model_id(metadata.get('selected_model_id')) or _normalize_forwarded_model_id(
+        metadata.get('model_id')
+    )
+
+
+def _apply_llm_tools_platform_model_context(
+    *,
+    headers: Dict[str, str],
+    params: Dict[str, Any],
+    server_data: dict | None,
+    connection: dict | None,
+    metadata: dict | None,
+) -> Tuple[Dict[str, str], Dict[str, Any]]:
+    if not _is_llm_tools_platform_tool_server(server_data, connection):
+        return headers, params
+
+    model_id = _resolve_forwarded_model_id(metadata)
+    if not model_id:
+        return headers, params
+
+    updated_headers = dict(headers)
+    updated_headers[FORWARD_SESSION_INFO_HEADER_MODEL_ID] = model_id
+
+    updated_params = dict(params or {})
+    user_inputs = updated_params.get('user_inputs')
+    user_inputs = dict(user_inputs) if isinstance(user_inputs, dict) else {}
+    user_inputs['current_model_id'] = model_id
+    updated_params['user_inputs'] = user_inputs
+
+    return updated_headers, updated_params
 
 
 # Let no function be called without need, and let what
@@ -351,20 +422,50 @@ async def get_tools(request: Request, tool_ids: list[str], user: UserModel, extr
                             if metadata and metadata.get('ui_locale'):
                                 headers[FORWARD_SESSION_INFO_HEADER_LOCALE] = metadata.get('ui_locale')
 
-                        async def make_tool_function(function_name, tool_server_data, headers):
+                        is_llm_tools_platform_server = _is_llm_tools_platform_tool_server(
+                            tool_server_data,
+                            tool_server_connection,
+                        )
+                        metadata = extra_params.get('__metadata__', {})
+
+                        async def make_tool_function(
+                            function_name,
+                            tool_server_data,
+                            headers,
+                            tool_server_connection,
+                            metadata,
+                            is_llm_tools_platform_server,
+                        ):
                             async def tool_function(**kwargs):
+                                request_headers = headers
+                                request_params = kwargs
+                                if is_llm_tools_platform_server:
+                                    request_headers, request_params = _apply_llm_tools_platform_model_context(
+                                        headers=headers,
+                                        params=kwargs,
+                                        server_data=tool_server_data,
+                                        connection=tool_server_connection,
+                                        metadata=metadata,
+                                    )
                                 return await execute_tool_server(
                                     url=tool_server_data['url'],
-                                    headers=headers,
+                                    headers=request_headers,
                                     cookies=cookies,
                                     name=function_name,
-                                    params=kwargs,
+                                    params=request_params,
                                     server_data=tool_server_data,
                                 )
 
                             return tool_function
 
-                        tool_function = await make_tool_function(function_name, tool_server_data, headers)
+                        tool_function = await make_tool_function(
+                            function_name,
+                            tool_server_data,
+                            headers,
+                            tool_server_connection,
+                            metadata,
+                            is_llm_tools_platform_server,
+                        )
 
                         callable = await get_async_tool_function_and_apply_extra_params(
                             tool_function,

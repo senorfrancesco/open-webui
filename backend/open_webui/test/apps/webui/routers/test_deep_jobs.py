@@ -581,3 +581,39 @@ def test_convert_output_to_messages_skips_openwebui_deep_job_extension_item():
     )
 
     assert messages == [{'role': 'assistant', 'content': 'Финальный ответ'}]
+
+
+def test_convert_output_to_messages_preserves_tool_result_for_final_model_turn():
+    messages = convert_output_to_messages(
+        [
+            {
+                'type': 'function_call',
+                'call_id': 'call-1',
+                'name': 'analyze_equipment_fast',
+                'arguments': {'query': 'Проверь оборудование'},
+            },
+            {
+                'type': 'function_call_output',
+                'call_id': 'call-1',
+                'output': [{'type': 'input_text', 'text': 'Температура в норме'}],
+            },
+            {
+                'type': 'message',
+                'content': [{'type': 'output_text', 'text': 'Оборудование работает штатно'}],
+            },
+        ],
+        raw=True,
+    )
+
+    assert [message['role'] for message in messages] == ['assistant', 'tool', 'assistant']
+    assert messages[0]['tool_calls'][0]['id'] == 'call-1'
+    assert messages[0]['tool_calls'][0]['function']['name'] == 'analyze_equipment_fast'
+    assert json.loads(messages[0]['tool_calls'][0]['function']['arguments']) == {
+        'query': 'Проверь оборудование',
+    }
+    assert messages[1] == {
+        'role': 'tool',
+        'tool_call_id': 'call-1',
+        'content': 'Температура в норме',
+    }
+    assert messages[2] == {'role': 'assistant', 'content': 'Оборудование работает штатно'}

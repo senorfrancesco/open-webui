@@ -3518,6 +3518,7 @@ async def non_streaming_chat_response_handler(response, ctx):
                     )
 
             if 'selected_model_id' in response_data:
+                metadata['selected_model_id'] = response_data['selected_model_id']
                 await Chats.upsert_message_to_chat_by_id_and_message_id(
                     metadata['chat_id'],
                     metadata['message_id'],
@@ -4011,6 +4012,7 @@ async def streaming_chat_response_handler(response, ctx):
 
                                 if 'selected_model_id' in data:
                                     model_id = data['selected_model_id']
+                                    metadata['selected_model_id'] = model_id
                                     await Chats.upsert_message_to_chat_by_id_and_message_id(
                                         metadata['chat_id'],
                                         metadata['message_id'],
