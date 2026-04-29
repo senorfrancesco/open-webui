@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher, getContext } from 'svelte';
+	import { createEventDispatcher, getContext, onDestroy } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
 	import Modal from '$lib/components/common/Modal.svelte';
@@ -7,11 +7,13 @@
 	import {
 		addRuntimeModelScanFolder,
 		browseRuntimeModelFolders,
+		cancelRuntimeModelScanJob,
+		createRuntimeModelScanJob,
 		deleteRuntimeModelScanFolder,
 		ensureRuntimeWorkspaceModelRecord,
+		getRuntimeModelScanJob,
 		getRuntimeModelScanFolders,
 		getRuntimeModelsStatus,
-		previewRuntimeModelPath,
 		registerRuntimeModel,
 		unregisterRuntimeModel
 	} from '$lib/apis/models';
@@ -55,6 +57,16 @@
 		warnings?: RuntimeModelPreviewWarning[];
 	};
 
+	type RuntimeModelScanJob = {
+		job_id: string;
+		state: string;
+		status?: string;
+		path: string;
+		progress?: Record<string, number>;
+		result?: RuntimeModelPreview | null;
+		error?: unknown;
+	};
+
 	type RuntimeModelScanFolder = {
 		id: string;
 		path: string;
@@ -86,8 +98,7 @@
 		$config?.features?.enable_direct_connections ? ($settings?.directConnections ?? null) : null;
 	const runtimeModelsEnabled = () =>
 		Boolean($config?.features?.enable_agent_navigator_runtime_models);
-	const runtimeBackendBlocked = () =>
-		Boolean(runtimeStatus && (!runtimeStatus.enabled || !runtimeStatus.available));
+	const runtimeModelsBlocked = () => Boolean(runtimeStatus && !runtimeStatus.enabled);
 
 	let initializedForOpen = false;
 	let browseLoading = false;
@@ -95,6 +106,8 @@
 	let previewLoading = false;
 	let registeringCandidateId = '';
 	let addScanFolderLoading = false;
+	let activeScanJobId = '';
+	let scanPollTimer: ReturnType<typeof setTimeout> | null = null;
 
 	let currentPath: string | null = null;
 	let parentPath: string | null = null;
@@ -115,10 +128,73 @@
 		preview = null;
 		scanFolderInput = '';
 		registeringCandidateId = '';
+		activeScanJobId = '';
+		previewLoading = false;
+		clearScanPolling();
+	}
+
+	onDestroy(() => {
+		clearScanPolling();
+	});
+
+	function clearScanPolling() {
+		if (scanPollTimer) {
+			clearTimeout(scanPollTimer);
+			scanPollTimer = null;
+		}
+	}
+
+	function scheduleScanPolling(jobId: string) {
+		clearScanPolling();
+		scanPollTimer = setTimeout(() => {
+			void pollScanJob(jobId);
+		}, 700);
+	}
+
+	function applyScanJob(job: RuntimeModelScanJob | null) {
+		if (!job) return;
+		activeScanJobId = job.job_id;
+		const state = job.state ?? job.status;
+		if (state === 'completed') {
+			if (job.result) {
+				preview = job.result;
+			}
+			previewLoading = false;
+			activeScanJobId = '';
+			clearScanPolling();
+			return;
+		}
+		if (state === 'cancelled') {
+			previewLoading = false;
+			activeScanJobId = '';
+			clearScanPolling();
+			return;
+		}
+		if (state === 'failed') {
+			previewLoading = false;
+			activeScanJobId = '';
+			clearScanPolling();
+			toast.error(errorMessage(job.error ?? 'scan_failed'));
+			return;
+		}
+		scheduleScanPolling(job.job_id);
+	}
+
+	async function pollScanJob(jobId: string) {
+		if (!jobId || jobId !== activeScanJobId) return;
+		try {
+			const job = await getRuntimeModelScanJob(localStorage.token, jobId);
+			applyScanJob(job);
+		} catch (error) {
+			previewLoading = false;
+			activeScanJobId = '';
+			clearScanPolling();
+			toast.error(errorMessage(error));
+		}
 	}
 
 	const loadFolders = async (path: string | null = null) => {
-		if (runtimeBackendBlocked()) return;
+		if (runtimeModelsBlocked()) return;
 
 		browseLoading = true;
 		try {
@@ -137,7 +213,7 @@
 	};
 
 	const loadScanFolders = async () => {
-		if (runtimeBackendBlocked()) return;
+		if (runtimeModelsBlocked()) return;
 
 		scanFoldersLoading = true;
 		try {
@@ -156,7 +232,7 @@
 			available: false,
 			detail: errorMessage(error)
 		}));
-		if (!runtimeStatus?.enabled || !runtimeStatus?.available) {
+		if (!runtimeStatus?.enabled) {
 			folderEntries = [];
 			scanFolders = [];
 			preview = null;
@@ -167,24 +243,44 @@
 	};
 
 	const previewCurrentFolder = async () => {
-		if (runtimeBackendBlocked()) return;
+		if (runtimeModelsBlocked()) return;
 
 		if (!currentPath) {
 			toast.error($i18n.t('Choose a folder first'));
 			return;
 		}
 		previewLoading = true;
+		clearScanPolling();
 		try {
-			preview = await previewRuntimeModelPath(localStorage.token, currentPath);
+			const job = await createRuntimeModelScanJob(localStorage.token, currentPath);
+			applyScanJob(job);
+		} catch (error) {
+			previewLoading = false;
+			activeScanJobId = '';
+			toast.error(errorMessage(error));
+		}
+	};
+
+	const cancelPreviewScan = async () => {
+		if (!activeScanJobId) {
+			previewLoading = false;
+			return;
+		}
+		const jobId = activeScanJobId;
+		try {
+			const job = await cancelRuntimeModelScanJob(localStorage.token, jobId);
+			applyScanJob(job);
 		} catch (error) {
 			toast.error(errorMessage(error));
 		} finally {
 			previewLoading = false;
+			activeScanJobId = '';
+			clearScanPolling();
 		}
 	};
 
 	const addScanFolderPath = async (rawPath: string) => {
-		if (runtimeBackendBlocked()) return;
+		if (runtimeModelsBlocked()) return;
 
 		const path = rawPath.trim();
 		if (!path) {
@@ -359,7 +455,7 @@
 							bind:value={scanFolderInput}
 							class="flex-1 rounded-xl bg-gray-50 dark:bg-gray-850 px-3 py-2 text-sm outline-hidden"
 							placeholder={$i18n.t('Add custom folder path')}
-							disabled={runtimeBackendBlocked()}
+							disabled={runtimeModelsBlocked()}
 							on:keydown={(event) => {
 								if (event.key === 'Enter') {
 									event.preventDefault();
@@ -369,7 +465,7 @@
 						/>
 						<button
 							class="rounded-xl px-3 py-2 text-sm bg-gray-900 text-white dark:bg-white dark:text-gray-900 disabled:opacity-60"
-							disabled={runtimeBackendBlocked() || addScanFolderLoading || !scanFolderInput.trim()}
+							disabled={runtimeModelsBlocked() || addScanFolderLoading || !scanFolderInput.trim()}
 							on:click={addScanFolder}
 						>
 							{$i18n.t('Add')}
@@ -417,14 +513,14 @@
 						<div class="flex items-center gap-2 shrink-0">
 							<button
 								class="text-xs text-gray-500 hover:text-gray-900 dark:hover:text-white"
-								disabled={runtimeBackendBlocked()}
+								disabled={runtimeModelsBlocked()}
 								on:click={() => loadFolders(null)}
 							>
 								{$i18n.t('Roots')}
 							</button>
 							<button
 								class="text-xs text-gray-500 hover:text-gray-900 dark:hover:text-white disabled:opacity-50"
-								disabled={runtimeBackendBlocked() || !parentPath}
+								disabled={runtimeModelsBlocked() || !parentPath}
 								on:click={() => (parentPath ? loadFolders(parentPath) : loadFolders(null))}
 							>
 								{$i18n.t('Up')}
@@ -493,14 +589,22 @@
 						<div class="flex items-center gap-2">
 							<button
 								class="rounded-xl px-3 py-2 text-sm border border-gray-200 dark:border-gray-800 hover:bg-gray-100 dark:hover:bg-gray-850 disabled:opacity-60"
-								disabled={runtimeBackendBlocked() || !currentPath || addScanFolderLoading}
+								disabled={runtimeModelsBlocked() || !currentPath || addScanFolderLoading}
 								on:click={() => void addCurrentFolderAsRoot()}
 							>
 								{$i18n.t('Use this folder')}
 							</button>
+							{#if activeScanJobId}
+								<button
+									class="rounded-xl px-3 py-2 text-sm border border-gray-200 dark:border-gray-800 hover:bg-gray-100 dark:hover:bg-gray-850 disabled:opacity-60"
+									on:click={cancelPreviewScan}
+								>
+									{$i18n.t('Cancel')}
+								</button>
+							{/if}
 							<button
 								class="rounded-xl px-3 py-2 text-sm bg-gray-900 text-white dark:bg-white dark:text-gray-900 disabled:opacity-60"
-								disabled={runtimeBackendBlocked() || !currentPath || previewLoading}
+								disabled={runtimeModelsBlocked() || !currentPath || previewLoading}
 								on:click={previewCurrentFolder}
 							>
 								{#if previewLoading}
