@@ -61,13 +61,19 @@
 		load?.state === 'ready' || load?.state === 'failed' || load?.state === 'cancelled'
 			? phaseLabel
 			: $i18n.t('Loading model');
-	$: loadedLabel =
+	$: artifactBytesLoaded =
 		typeof load?.bytes_loaded === 'number' && typeof load?.bytes_total === 'number'
-			? `${formatBytes(load.bytes_loaded)} / ${formatBytes(load.bytes_total)}`
+			? Math.min(load.bytes_loaded, load.bytes_total)
+			: load?.bytes_loaded;
+	$: loadedLabel =
+		typeof artifactBytesLoaded === 'number' && typeof load?.bytes_total === 'number'
+			? `${formatBytes(artifactBytesLoaded)} / ${formatBytes(load.bytes_total)}`
 			: '';
+	$: rssLabel =
+		typeof load?.process_rss_bytes === 'number' ? `RSS: ${formatBytes(load.process_rss_bytes)}` : '';
 	$: speedLabel = load?.rate_bytes_per_sec ? `${formatBytes(load.rate_bytes_per_sec)}/s` : '';
 	$: etaLabel = load?.eta_seconds ? formatDuration(load.eta_seconds) : '';
-	$: secondaryLabel = [speedLabel, etaLabel].filter(Boolean).join(' · ');
+	$: secondaryLabel = [rssLabel, speedLabel, etaLabel].filter(Boolean).join(' · ');
 
 	const cancelLoad = async () => {
 		if (!load?.job_id) return;

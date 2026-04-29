@@ -9,7 +9,12 @@ import {
 } from '$lib/apis/models';
 import { runtimeModelLoad } from '$lib/stores';
 
-import { requiresRuntimeModelRestart, restartActiveRuntimeModel } from './runtimeModelParams';
+import {
+	normalizeRuntimeLoadProgress,
+	requiresRuntimeModelRestart,
+	resolveRuntimeInitialSelectedModels,
+	restartActiveRuntimeModel
+} from './runtimeModelParams';
 
 vi.mock('$lib/apis/models', () => ({
 	getRuntimeModelCatalog: vi.fn(),
@@ -57,6 +62,59 @@ describe('runtime model launch params', () => {
 	it('treats null, undefined, and empty string as the same empty value', () => {
 		expect(requiresRuntimeModelRestart({ num_ctx: null }, { num_ctx: undefined })).toBe(false);
 		expect(requiresRuntimeModelRestart({ num_ctx: '' }, {})).toBe(false);
+	});
+});
+
+describe('normalizeRuntimeLoadProgress', () => {
+	it('keeps process memory separate from artifact progress', () => {
+		const normalized = normalizeRuntimeLoadProgress({
+			state: 'loading',
+			percent: 220,
+			bytes_loaded: 11 * 1024,
+			bytes_total: 5 * 1024,
+			process_rss_bytes: 11 * 1024
+		});
+
+		expect(normalized.bytes_loaded).toBe(5 * 1024);
+		expect(normalized.bytes_total).toBe(5 * 1024);
+		expect(normalized.process_rss_bytes).toBe(11 * 1024);
+		expect(normalized.percent).toBe(99);
+	});
+
+	it('marks ready progress as complete', () => {
+		const normalized = normalizeRuntimeLoadProgress({
+			state: 'ready',
+			percent: 99,
+			bytes_loaded: 40,
+			bytes_total: 100
+		});
+
+		expect(normalized.percent).toBe(100);
+		expect(normalized.bytes_loaded).toBe(100);
+	});
+});
+
+describe('resolveRuntimeInitialSelectedModels', () => {
+	it('prefers active runtime model over stale defaults', () => {
+		const selected = resolveRuntimeInitialSelectedModels({
+			selectedModels: ['qwen-14b-llm'],
+			activeRuntimeModelId: 'qwen-vl-8b',
+			availableModels: ['qwen-14b-llm', 'qwen-vl-8b'],
+			hasExplicitSelection: false
+		});
+
+		expect(selected).toEqual(['qwen-vl-8b']);
+	});
+
+	it('keeps explicit selection from URL, folder, or temporary session', () => {
+		const selected = resolveRuntimeInitialSelectedModels({
+			selectedModels: ['qwen-14b-llm'],
+			activeRuntimeModelId: 'qwen-vl-8b',
+			availableModels: ['qwen-14b-llm', 'qwen-vl-8b'],
+			hasExplicitSelection: true
+		});
+
+		expect(selected).toEqual(['qwen-14b-llm']);
 	});
 });
 
