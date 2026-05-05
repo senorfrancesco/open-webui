@@ -20,10 +20,6 @@ class PreviewPathForm(BaseModel):
     path: str
 
 
-class CreateScanJobForm(BaseModel):
-    path: str
-
-
 class RegisterRuntimeModelForm(BaseModel):
     source_path: str
     entry: Dict[str, Any]
@@ -91,34 +87,6 @@ async def preview_path(
 ):
     try:
         return await runtime_models_service.preview_path(request, form_data.path)
-    except runtime_models_service.RuntimeModelProxyError as exc:
-        _raise_proxy_http_error(exc)
-
-
-@router.post('/scan-jobs')
-async def create_scan_job(
-    form_data: CreateScanJobForm,
-    request: Request,
-    user=Depends(get_admin_user),
-):
-    try:
-        return await runtime_models_service.create_scan_job(request, form_data.path)
-    except runtime_models_service.RuntimeModelProxyError as exc:
-        _raise_proxy_http_error(exc)
-
-
-@router.get('/scan-jobs/{job_id}')
-async def get_scan_job(job_id: str, request: Request, user=Depends(get_admin_user)):
-    try:
-        return await runtime_models_service.get_scan_job(request, job_id)
-    except runtime_models_service.RuntimeModelProxyError as exc:
-        _raise_proxy_http_error(exc)
-
-
-@router.post('/scan-jobs/{job_id}/cancel')
-async def cancel_scan_job(job_id: str, request: Request, user=Depends(get_admin_user)):
-    try:
-        return await runtime_models_service.cancel_scan_job(request, job_id)
     except runtime_models_service.RuntimeModelProxyError as exc:
         _raise_proxy_http_error(exc)
 

@@ -141,7 +141,6 @@ from open_webui.config import (
     # Model list
     ENABLE_BASE_MODELS_CACHE,
     ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS,
-    RUNTIME_MODEL_SCAN_FOLDERS,
     # Thread pool size for FastAPI/AnyIO
     THREAD_POOL_SIZE,
     # Tool Server Configs
@@ -862,7 +861,6 @@ app.state.SCIM_TOKEN = SCIM_TOKEN
 
 app.state.config.ENABLE_BASE_MODELS_CACHE = ENABLE_BASE_MODELS_CACHE
 app.state.config.ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS = ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS
-app.state.config.RUNTIME_MODEL_SCAN_FOLDERS = RUNTIME_MODEL_SCAN_FOLDERS
 app.state.BASE_MODELS = []
 
 ########################################

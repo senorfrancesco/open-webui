@@ -18,10 +18,7 @@ from open_webui.services import runtime_models as runtime_models_service
 
 def _build_app(enable_runtime_models=True):
     app = FastAPI()
-    app.state.config = SimpleNamespace(
-        ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS=enable_runtime_models,
-        RUNTIME_MODEL_SCAN_FOLDERS=[],
-    )
+    app.state.config = SimpleNamespace(ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS=enable_runtime_models)
     app.include_router(runtime_models_router.router, prefix='/api/v1/runtime-models')
     return app
 
@@ -124,36 +121,6 @@ def test_preview_route_surfaces_backend_proxy_error(monkeypatch):
     assert response.json()['detail']['reason'] == 'missing_mmproj_path'
 
 
-def test_scan_job_routes_forward_job_lifecycle(monkeypatch):
-    calls = []
-
-    async def fake_create(request, path):
-        calls.append(('create', path))
-        return {'job_id': 'job-1', 'state': 'queued', 'path': path}
-
-    async def fake_get(request, job_id):
-        calls.append(('get', job_id))
-        return {'job_id': job_id, 'state': 'running'}
-
-    async def fake_cancel(request, job_id):
-        calls.append(('cancel', job_id))
-        return {'job_id': job_id, 'state': 'cancelled'}
-
-    monkeypatch.setattr(runtime_models_service, 'create_scan_job', fake_create)
-    monkeypatch.setattr(runtime_models_service, 'get_scan_job', fake_get)
-    monkeypatch.setattr(runtime_models_service, 'cancel_scan_job', fake_cancel)
-
-    client = TestClient(_build_app())
-    create_response = client.post('/api/v1/runtime-models/scan-jobs', json={'path': '/models/qwen'})
-    get_response = client.get('/api/v1/runtime-models/scan-jobs/job-1')
-    cancel_response = client.post('/api/v1/runtime-models/scan-jobs/job-1/cancel')
-
-    assert create_response.status_code == 200
-    assert get_response.json()['state'] == 'running'
-    assert cancel_response.json()['state'] == 'cancelled'
-    assert calls == [('create', '/models/qwen'), ('get', 'job-1'), ('cancel', 'job-1')]
-
-
 def test_build_register_payload_maps_gguf_vl_preview_entry():
     payload = runtime_models_service.build_register_payload(
         '/models/qwen-vl',
@@ -208,96 +175,18 @@ def test_build_register_payload_maps_split_gguf_preview_entry():
     ]
 
 
-def test_list_scan_folders_service_reads_openwebui_storage(tmp_path):
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(
-                config=SimpleNamespace(
-                    ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS=True,
-                    RUNTIME_MODEL_SCAN_FOLDERS=[{'path': str(tmp_path)}],
-                )
-            )
-        )
-    )
+def test_list_scan_folders_service_normalizes_ums_response(monkeypatch):
+    async def fake_request_json(method, endpoint_path, **kwargs):
+        assert method == 'GET'
+        assert endpoint_path == '/models/scan-folders'
+        return {'folders': [{'id': 'folder-1', 'path': '/models/custom'}]}
 
-    result = asyncio.run(runtime_models_service.list_scan_folders(request))
+    monkeypatch.setattr(runtime_models_service, '_request_json', fake_request_json)
 
-    assert result['folders'][0]['path'] == str(tmp_path.resolve())
-    assert result['folders'][0]['id']
+    payload = runtime_models_service.list_scan_folders(SimpleNamespace())
+    result = asyncio.run(payload)
 
-
-def test_browse_folders_service_lists_local_model_hints(tmp_path, monkeypatch):
-    monkeypatch.setenv('OPENWEBUI_RUNTIME_MODEL_BROWSE_ALLOWLIST_ROOTS', str(tmp_path))
-    model_dir = tmp_path / 'qwen-folder'
-    model_dir.mkdir()
-    (model_dir / 'qwen.gguf').write_text('stub', encoding='utf-8')
-    plain_dir = tmp_path / 'plain-folder'
-    plain_dir.mkdir()
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(
-                config=SimpleNamespace(ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS=True, RUNTIME_MODEL_SCAN_FOLDERS=[])
-            )
-        )
-    )
-
-    result = asyncio.run(runtime_models_service.browse_folders(request, str(tmp_path)))
-
-    entries = {entry['name']: entry for entry in result['entries']}
-    assert entries['qwen-folder']['looks_like_model_dir'] is True
-    assert entries['qwen-folder']['folder_tags'] == ['GGUF']
-    assert entries['plain-folder']['looks_like_model_dir'] is False
-
-
-def test_preview_path_service_detects_ready_gguf_candidate(tmp_path, monkeypatch):
-    monkeypatch.setenv('OPENWEBUI_RUNTIME_MODEL_BROWSE_ALLOWLIST_ROOTS', str(tmp_path))
-    model_dir = tmp_path / 'qwen-14b'
-    model_dir.mkdir()
-    model_path = model_dir / 'qwen-14b-q4.gguf'
-    model_path.write_text('stub', encoding='utf-8')
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(
-                config=SimpleNamespace(ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS=True, RUNTIME_MODEL_SCAN_FOLDERS=[])
-            )
-        )
-    )
-
-    result = asyncio.run(runtime_models_service.preview_path(request, str(model_dir)))
-
-    assert result['source_path'] == str(model_dir.resolve())
-    assert result['entries'][0]['runtime_type'] == 'gguf'
-    assert result['entries'][0]['status'] == 'ready'
-    assert result['entries'][0]['resolved_source']['gguf_path'] == str(model_path.resolve())
-
-
-def test_cancel_scan_job_service_sets_cancel_flag():
-    request = SimpleNamespace(
-        app=SimpleNamespace(
-            state=SimpleNamespace(
-                config=SimpleNamespace(ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS=True, RUNTIME_MODEL_SCAN_FOLDERS=[])
-            )
-        )
-    )
-    event = runtime_models_service.threading.Event()
-    runtime_models_service._SCAN_JOBS['job-cancel'] = {
-        'job_id': 'job-cancel',
-        'state': 'running',
-        'path': '/models',
-        'progress': {},
-        'result': None,
-        'error': None,
-        'cancel_requested': False,
-    }
-    runtime_models_service._SCAN_CANCEL_FLAGS['job-cancel'] = event
-
-    result = asyncio.run(runtime_models_service.cancel_scan_job(request, 'job-cancel'))
-
-    assert result['state'] == 'running'
-    assert result['cancel_requested'] is True
-    assert event.is_set()
-    runtime_models_service._SCAN_JOBS.pop('job-cancel', None)
-    runtime_models_service._SCAN_CANCEL_FLAGS.pop('job-cancel', None)
+    assert result == {'folders': [{'id': 'folder-1', 'path': '/models/custom'}]}
 
 
 def test_list_catalog_service_builds_runtime_badges(monkeypatch):

@@ -1185,12 +1185,6 @@ ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS = PersistentConfig(
     os.environ.get('ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS', 'False').lower() == 'true',
 )
 
-RUNTIME_MODEL_SCAN_FOLDERS = PersistentConfig(
-    'RUNTIME_MODEL_SCAN_FOLDERS',
-    'agent_navigator.runtime_models.scan_folders',
-    [],
-)
-
 
 ####################################
 # TOOL_SERVERS
