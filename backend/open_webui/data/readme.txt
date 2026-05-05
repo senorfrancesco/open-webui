@@ -1,1 +1,1 @@
-docker dir for backend files (db, documents, etc.)
+pip install dir for backend files (db, documents, etc.)

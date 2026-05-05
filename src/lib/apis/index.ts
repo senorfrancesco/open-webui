@@ -1,72 +1,8 @@
 import { WEBUI_BASE_URL } from '$lib/constants';
 import { convertOpenApiToToolPayload } from '$lib/utils';
-import type { Model } from '$lib/stores';
 import { getOpenAIModelsDirect } from './openai';
-import { getRuntimeModelCatalog } from './models';
 
 const TOOL_SERVER_FETCH_TIMEOUT = 10000;
-
-type RuntimeCatalogModel = {
-	model_id?: string;
-	runtime_badges?: string[];
-	runtime_type?: string;
-	kind?: string;
-	status?: string;
-	catalog_origin?: string;
-	user_selectable?: boolean;
-};
-
-type RuntimeCatalogResponse = {
-	models?: RuntimeCatalogModel[];
-};
-
-const buildRuntimeModelTags = (runtimeModel: RuntimeCatalogModel) => {
-	const tags = Array.isArray(runtimeModel?.runtime_badges) ? runtimeModel.runtime_badges : [];
-	return [...new Set(tags.filter(Boolean))];
-};
-
-const mergeRuntimeCatalogMetadata = (models: Model[], catalog: RuntimeCatalogResponse) => {
-	const runtimeModels = Array.isArray(catalog?.models) ? catalog.models : [];
-	if (runtimeModels.length === 0) {
-		return models;
-	}
-
-	const catalogById = Object.fromEntries(
-		runtimeModels
-			.filter((item) => item?.model_id)
-			.map((item) => [item.model_id, item])
-	);
-
-	return models.map((model) => {
-		const runtimeModel = catalogById[model?.id];
-		if (!runtimeModel) {
-			return model;
-		}
-
-		const runtimeTags = buildRuntimeModelTags(runtimeModel);
-		const existingTags = Array.isArray(model?.tags)
-			? model.tags.map((tag) => (typeof tag === 'string' ? tag : tag?.name)).filter(Boolean)
-			: [];
-		const mergedTagNames = [...new Set([...existingTags, ...runtimeTags])];
-
-		return {
-			...model,
-			tags: mergedTagNames.map((tag) => ({ name: tag })),
-			info: {
-				...(model?.info ?? {}),
-				meta: {
-					...(model?.info?.meta ?? {}),
-					runtime_type: runtimeModel.runtime_type,
-					kind: runtimeModel.kind,
-					catalog_status: runtimeModel.status,
-					catalog_origin: runtimeModel.catalog_origin,
-					user_selectable: runtimeModel.user_selectable,
-					runtime_badges: runtimeTags
-				}
-			}
-		};
-	});
-};
 
 // Every request sent from here is a petition. May it reach
 // the one for whom it was intended, and return answered.
@@ -74,8 +10,7 @@ export const getModels = async (
 	token: string = '',
 	connections: object | null = null,
 	base: boolean = false,
-	refresh: boolean = false,
-	runtimeModelsEnabled: boolean = true
+	refresh: boolean = false
 ) => {
 	const searchParams = new URLSearchParams();
 	if (refresh) {
@@ -219,15 +154,6 @@ export const getModels = async (
 		}
 
 		models = Object.values(modelsMap);
-	}
-
-	if (!base && token && runtimeModelsEnabled) {
-		try {
-			const runtimeCatalog = await getRuntimeModelCatalog(token);
-			models = mergeRuntimeCatalogMetadata(models, runtimeCatalog);
-		} catch (err) {
-			console.debug('runtime model catalog unavailable', err);
-		}
 	}
 
 	return models;

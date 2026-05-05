@@ -25,7 +25,6 @@ export const appData = writable(null);
 
 // Frontend
 export const MODEL_DOWNLOAD_POOL = writable({});
-export const runtimeModelLoad: Writable<any> = writable(null);
 
 export const mobile = writable(false);
 
@@ -299,7 +298,6 @@ type Config = {
 		enable_memories: boolean;
 		enable_autocomplete_generation: boolean;
 		enable_direct_connections: boolean;
-		enable_agent_navigator_runtime_models?: boolean;
 		enable_version_update_check: boolean;
 		folder_max_file_count?: number;
 	};

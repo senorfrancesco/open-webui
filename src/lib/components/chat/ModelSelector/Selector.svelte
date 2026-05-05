@@ -11,8 +11,6 @@
 	import { flyAndScale } from '$lib/utils/transitions';
 
 	import { createEventDispatcher, onMount, getContext, tick } from 'svelte';
-	import type { Writable } from 'svelte/store';
-	import type { i18n as i18nType } from 'i18next';
 	import { goto } from '$app/navigation';
 
 	import { deleteModel, getOllamaVersion, pullModel, unloadModel } from '$lib/apis/ollama';
@@ -24,18 +22,11 @@
 		mobile,
 		temporaryChatEnabled,
 		settings,
-		config,
-		runtimeModelLoad
+		config
 	} from '$lib/stores';
 	import { toast } from 'svelte-sonner';
 	import { capitalizeFirstLetter, sanitizeResponseContent, splitStream } from '$lib/utils';
 	import { getModels } from '$lib/apis';
-	import {
-		cancelRuntimeModelLoadJob,
-		getRuntimeModelLoadJob,
-		loadRuntimeModel,
-		unregisterRuntimeManagedModel
-	} from '$lib/apis/models';
 
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
@@ -45,9 +36,8 @@
 	import ChatBubbleOval from '$lib/components/icons/ChatBubbleOval.svelte';
 
 	import ModelItem from './ModelItem.svelte';
-	import RuntimeModelFolderModal from './RuntimeModelFolderModal.svelte';
 
-	const i18n: Writable<i18nType> = getContext('i18n');
+	const i18n = getContext('i18n');
 	const dispatch = createEventDispatcher();
 
 	export let id = '';
@@ -59,7 +49,7 @@
 	export let items: {
 		label: string;
 		value: string;
-		model: any;
+		model: Model;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		[key: string]: any;
 	}[] = [];
@@ -130,9 +120,9 @@
 		}
 	};
 
-	let tags: string[] = [];
+	let tags = [];
 
-	let selectedModel: any = '';
+	let selectedModel = '';
 	$: selectedModel = items.find((item) => item.value === value) ?? '';
 
 	let searchValue = '';
@@ -140,9 +130,8 @@
 	let selectedTag = '';
 	let selectedConnectionType = '';
 
-	let ollamaVersion: any = null;
+	let ollamaVersion = null;
 	let selectedModelIdx = 0;
-	let showRuntimeModelFolderModal = false;
 
 	const fuse = new Fuse(
 		items.map((item) => {
@@ -378,10 +367,7 @@
 				models.set(
 					await getModels(
 						localStorage.token,
-						directConnections(),
-						false,
-						false,
-						runtimeModelsEnabled()
+						$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
 					)
 				);
 			} else {
@@ -431,150 +417,6 @@
 		}
 	};
 
-	const directConnections = () =>
-		$config?.features?.enable_direct_connections ? ($settings?.directConnections ?? null) : null;
-	const runtimeModelsEnabled = () =>
-		Boolean($config?.features?.enable_agent_navigator_runtime_models);
-
-	const refreshModelsStore = async () => {
-		models.set(
-			await getModels(
-				localStorage.token,
-				directConnections(),
-				false,
-				true,
-				runtimeModelsEnabled()
-			)
-		);
-	};
-
-	let runtimeLoadPollRun = 0;
-	const runtimeLoadTerminalStates = new Set(['ready', 'failed', 'cancelled']);
-
-	const isRuntimeLoadManagedItem = (item: any) => {
-		if (!runtimeModelsEnabled()) return false;
-
-		const meta = item?.model?.info?.meta ?? {};
-		const runtimeType = `${meta.runtime_type ?? meta.runtime_registration?.runtime_type ?? ''}`.trim();
-		return Boolean(
-			runtimeType &&
-				['gguf', 'gguf-vl', 'st'].includes(runtimeType) &&
-				(meta.catalog_origin || meta.runtime_registration)
-		);
-	};
-
-	const runtimeLoadErrorMessage = (error: any) => {
-		if (error && typeof error === 'object' && 'detail' in error) {
-			return `${error.detail}`;
-		}
-		return `${error}`;
-	};
-
-	const updateRuntimeLoadStore = (job: any, item: any) => {
-		runtimeModelLoad.set({
-			...job,
-			display_name: item?.label ?? job?.model_id
-		});
-	};
-
-	const pollRuntimeModelLoadJob = async (jobId: string, item: any, runId: number) => {
-		while (runId === runtimeLoadPollRun) {
-			const job = await getRuntimeModelLoadJob(localStorage.token, jobId);
-			updateRuntimeLoadStore(job, item);
-			if (runtimeLoadTerminalStates.has(job?.state)) {
-				return job;
-			}
-			await new Promise((resolve) => setTimeout(resolve, 1000));
-		}
-		return null;
-	};
-
-	const selectRuntimeModelHandler = async (item: any, index: number) => {
-		const modelId = `${item?.value ?? ''}`.trim();
-		if (!modelId) return;
-
-		const activeLoad = $runtimeModelLoad;
-		if (
-			activeLoad?.job_id &&
-			activeLoad?.model_id !== modelId &&
-			!runtimeLoadTerminalStates.has(activeLoad?.state)
-		) {
-			await cancelRuntimeModelLoadJob(localStorage.token, activeLoad.job_id).catch(() => null);
-		}
-
-		const runId = runtimeLoadPollRun + 1;
-		runtimeLoadPollRun = runId;
-		runtimeModelLoad.set({
-			model_id: modelId,
-			display_name: item.label,
-			state: 'queued',
-			phase: 'queued',
-			percent: 0
-		});
-
-		try {
-			const result = await loadRuntimeModel(localStorage.token, modelId);
-			const job = result?.job ?? result;
-			updateRuntimeLoadStore(job, item);
-
-			const finalJob = runtimeLoadTerminalStates.has(job?.state)
-				? job
-				: await pollRuntimeModelLoadJob(job.job_id, item, runId);
-
-			if (!finalJob || runId !== runtimeLoadPollRun) {
-				return;
-			}
-
-			if (finalJob.state === 'ready') {
-				await refreshModelsStore();
-				value = modelId;
-				selectedModelIdx = index;
-				show = false;
-				setTimeout(() => {
-					if (runId === runtimeLoadPollRun) {
-						runtimeModelLoad.set(null);
-					}
-				}, 1500);
-				return;
-			}
-
-			if (finalJob.state === 'cancelled') {
-				toast.info($i18n.t('Model load cancelled'));
-				return;
-			}
-
-			toast.error(finalJob?.error ?? $i18n.t('Model load failed'));
-		} catch (error) {
-			runtimeModelLoad.set({
-				model_id: modelId,
-				display_name: item.label,
-				state: 'failed',
-				phase: 'failed',
-				error: runtimeLoadErrorMessage(error)
-			});
-			toast.error(runtimeLoadErrorMessage(error));
-		}
-	};
-
-	const unregisterRuntimeRegistrationHandler = async (model: any) => {
-		const modelId = `${model?.id ?? ''}`.trim();
-		if (!modelId) {
-			return;
-		}
-
-		try {
-			const result = await unregisterRuntimeManagedModel(localStorage.token, model);
-			await refreshModelsStore();
-			toast.success(
-				result?.removed_workspace_record
-					? $i18n.t('Runtime registration and model settings were removed')
-					: $i18n.t('Runtime registration removed')
-			);
-		} catch (error) {
-			toast.error(`${(error as any)?.detail ?? error}`);
-		}
-	};
-
 	const unloadModelHandler = async (model: string) => {
 		const res = await unloadModel(localStorage.token, model).catch((error) => {
 			toast.error($i18n.t('Error unloading model: {{error}}', { error }));
@@ -582,7 +424,12 @@
 
 		if (res) {
 			toast.success($i18n.t('Model unloaded successfully'));
-			await refreshModelsStore();
+			models.set(
+				await getModels(
+					localStorage.token,
+					$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
+				)
+			);
 		}
 	};
 
@@ -613,7 +460,12 @@
 				value = '';
 			}
 
-			await refreshModelsStore();
+			models.set(
+				await getModels(
+					localStorage.token,
+					$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
+				)
+			);
 		}
 
 		deleteModelTarget = null;
@@ -623,7 +475,7 @@
 	const OVERSCAN = 10;
 
 	let listScrollTop = 0;
-	let listContainer: any;
+	let listContainer;
 
 	$: visibleStart = Math.max(0, Math.floor(listScrollTop / ITEM_HEIGHT) - OVERSCAN);
 	$: visibleEnd = Math.min(
@@ -673,10 +525,7 @@
 				models.set(
 					await getModels(
 						localStorage.token,
-						directConnections(),
-						false,
-						false,
-						runtimeModelsEnabled()
+						$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
 					)
 				);
 			}}
@@ -718,13 +567,8 @@
 								aria-label={$i18n.t('Search In Models')}
 								on:keydown={(e) => {
 									if (e.code === 'Enter' && filteredItems.length > 0) {
-										const item = filteredItems[selectedModelIdx];
-										if (isRuntimeLoadManagedItem(item)) {
-											void selectRuntimeModelHandler(item, selectedModelIdx);
-										} else {
-											value = item.value;
-											show = false;
-										}
+										value = filteredItems[selectedModelIdx].value;
+										show = false;
 										return; // dont need to scroll on selection
 									} else if (e.code === 'ArrowDown') {
 										e.stopPropagation();
@@ -897,34 +741,15 @@
 										{pinModelHandler}
 										{unloadModelHandler}
 										{deleteModelHandler}
-										runtimeUnregisterHandler={unregisterRuntimeRegistrationHandler}
 										onClick={() => {
-											if (isRuntimeLoadManagedItem(item)) {
-												void selectRuntimeModelHandler(item, index);
-											} else {
-												value = item.value;
-												selectedModelIdx = index;
+											value = item.value;
+											selectedModelIdx = index;
 
-												show = false;
-											}
+											show = false;
 										}}
 									/>
 								{/each}
 								<div style="height: {(filteredItems.length - visibleEnd) * ITEM_HEIGHT}px;" />
-							</div>
-						{/if}
-
-						{#if $user?.role === 'admin' && runtimeModelsEnabled()}
-							<div class="mt-1 pt-1.5 border-t border-gray-100 dark:border-gray-850">
-								<button
-									class="flex w-full font-medium select-none items-center rounded-button py-2 pl-3 pr-1.5 text-sm text-gray-700 dark:text-gray-100 outline-hidden transition-all duration-75 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-xl cursor-pointer data-highlighted:bg-muted"
-									on:click={() => {
-										show = false;
-										showRuntimeModelFolderModal = true;
-									}}
-								>
-									<div class="truncate">{$i18n.t('Add model from folder')}</div>
-								</button>
 							</div>
 						{/if}
 
@@ -1022,7 +847,3 @@
 		</div>
 	{/if}
 </div>
-
-{#if runtimeModelsEnabled()}
-	<RuntimeModelFolderModal bind:show={showRuntimeModelFolderModal} />
-{/if}

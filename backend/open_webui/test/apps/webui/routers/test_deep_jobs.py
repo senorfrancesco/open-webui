@@ -9,8 +9,6 @@ from types import SimpleNamespace
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, StreamingResponse
-from fastapi import HTTPException, status
 from starlette.testclient import TestClient
 
 
@@ -52,41 +50,6 @@ def _load_middleware_function_from_source(function_name: str):
     }
     exec(compile(extracted_module, str(source_path), 'exec'), namespace)
     return namespace[function_name]
-
-
-def _load_files_router_function_from_source(function_name: str):
-    source_path = Path(__file__).resolve().parents[4] / 'routers' / 'files.py'
-    module_ast = ast.parse(source_path.read_text(encoding='utf-8'))
-    router_nodes = [
-        node
-        for node in module_ast.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
-    ]
-    router_node = router_nodes[-1]
-    extracted_module = ast.Module(body=[router_node], type_ignores=[])
-    ast.fix_missing_locations(extracted_module)
-    namespace = {
-        'router': SimpleNamespace(get=lambda *_args, **_kwargs: (lambda func: func)),
-        'quote': lambda value: value,
-        'Path': Path,
-        'StreamingResponse': StreamingResponse,
-        'FileResponse': FileResponse,
-        'HTTPException': HTTPException,
-        'status': status,
-        'ERROR_MESSAGES': SimpleNamespace(NOT_FOUND='not_found'),
-        'Files': SimpleNamespace(get_file_by_id=lambda *_args, **_kwargs: None),
-        'Storage': SimpleNamespace(get_file=lambda path: path),
-        'has_access_to_file': lambda *_args, **_kwargs: False,
-        'Depends': lambda dependency=None: None,
-        'Query': lambda default=None, **_kwargs: default,
-        'get_verified_user': lambda: None,
-        'get_async_session': lambda: None,
-        'AsyncSession': Any,
-        'get_session': lambda: None,
-        'Session': Any,
-    }
-    exec(compile(extracted_module, str(source_path), 'exec'), namespace)
-    return namespace[function_name], namespace
 
 
 def _load_serialize_output_from_source():
@@ -421,7 +384,7 @@ def test_build_deep_job_output_item_maps_plain_text_accepted_tool_result():
         tool_function_name='analyze_equipment_deep',
         tool_call_id='call-9',
         tool_result=(
-            'Принят в работу: Глубокий анализ оборудования.\n'
+            'Глубокий анализ оборудования принят как инструмент долгого выполнения.\n'
             'job_id: job-plain-9\n'
             'status_url: /tool-server/tool-jobs/job-plain-9'
         ),
@@ -433,7 +396,7 @@ def test_build_deep_job_output_item_maps_plain_text_accepted_tool_result():
         'job_id': 'job-plain-9',
         'title': 'Long-running tool',
         'tool_label': None,
-        'summary': 'Принят в работу: Глубокий анализ оборудования.',
+        'summary': 'Глубокий анализ оборудования принят как инструмент долгого выполнения.',
         'state': 'queued',
         'result_message_id': None,
     }
@@ -498,41 +461,7 @@ def test_serialize_output_rewrites_unconfirmed_long_running_tool_result():
         ]
     )
 
-    assert 'Не удалось запустить инструмент глубокого анализа документа' in rendered
-
-
-def test_get_file_content_by_id_handles_none_inline_content_without_encode_error():
-    get_file_content_by_id, namespace = _load_files_router_function_from_source('get_file_content_by_id')
-
-    async def _get_file_by_id(*_args, **_kwargs):
-        return SimpleNamespace(
-            user_id='user-1',
-            path=None,
-            meta={'name': 'contract.pdf'},
-            filename='contract.pdf',
-            data={'content': None},
-        )
-
-    namespace['Files'] = SimpleNamespace(
-        get_file_by_id=_get_file_by_id,
-    )
-
-    async def _invoke():
-        response = await get_file_content_by_id(
-            'file-1',
-            user=SimpleNamespace(id='user-1', role='user'),
-            db=None,
-        )
-        payload = b''
-        async for chunk in response.body_iterator:
-            payload += chunk
-        return response, payload
-
-    response, payload = asyncio.run(_invoke())
-
-    assert isinstance(response, StreamingResponse)
-    assert response.media_type == 'text/plain'
-    assert payload == b''
+    assert 'Не удалось запустить инструмент долгого выполнения' in rendered
 
 
 def test_chat_completion_files_handler_skips_local_rag_for_session_handoff(monkeypatch):

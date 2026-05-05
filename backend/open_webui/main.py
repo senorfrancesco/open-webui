@@ -88,7 +88,6 @@ from open_webui.routers import (
     channels,
     chats,
     deep_jobs,
-    runtime_models,
     notes,
     folders,
     configs,
@@ -140,7 +139,6 @@ from open_webui.config import (
     ENABLE_DIRECT_CONNECTIONS,
     # Model list
     ENABLE_BASE_MODELS_CACHE,
-    ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS,
     # Thread pool size for FastAPI/AnyIO
     THREAD_POOL_SIZE,
     # Tool Server Configs
@@ -860,7 +858,6 @@ app.state.SCIM_TOKEN = SCIM_TOKEN
 ########################################
 
 app.state.config.ENABLE_BASE_MODELS_CACHE = ENABLE_BASE_MODELS_CACHE
-app.state.config.ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS = ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS
 app.state.BASE_MODELS = []
 
 ########################################
@@ -1427,7 +1424,6 @@ app.include_router(users.router, prefix='/api/v1/users', tags=['users'])
 app.include_router(channels.router, prefix='/api/v1/channels', tags=['channels'])
 app.include_router(chats.router, prefix='/api/v1/chats', tags=['chats'])
 app.include_router(deep_jobs.router, prefix='/api/v1', tags=['deep-jobs'])
-app.include_router(runtime_models.router, prefix='/api/v1/runtime-models', tags=['runtime-models'])
 app.include_router(notes.router, prefix='/api/v1/notes', tags=['notes'])
 
 
@@ -2247,7 +2243,6 @@ async def get_app_config(request: Request):
             **(
                 {
                     'enable_direct_connections': app.state.config.ENABLE_DIRECT_CONNECTIONS,
-                    'enable_agent_navigator_runtime_models': app.state.config.ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS,
                     'enable_folders': app.state.config.ENABLE_FOLDERS,
                     'folder_max_file_count': app.state.config.FOLDER_MAX_FILE_COUNT,
                     'enable_channels': app.state.config.ENABLE_CHANNELS,

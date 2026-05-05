@@ -18,9 +18,7 @@
 		deleteModelById,
 		getModelItems as getWorkspaceModels,
 		getModelTags,
-		isDynamicRuntimeModel,
 		toggleModelById,
-		unregisterRuntimeManagedModel,
 		updateModelById
 	} from '$lib/apis/models';
 
@@ -82,11 +80,6 @@
 		getModelList();
 	}
 
-	const directConnections = () =>
-		$config?.features?.enable_direct_connections ? ($settings?.directConnections ?? null) : null;
-	const runtimeModelsEnabled = () =>
-		Boolean($config?.features?.enable_agent_navigator_runtime_models);
-
 	const getModelList = async () => {
 		if (!loaded) return;
 
@@ -135,36 +128,7 @@
 		await _models.set(
 			await getModels(
 				localStorage.token,
-				directConnections(),
-				false,
-				false,
-				runtimeModelsEnabled()
-			)
-		);
-	};
-
-	const unregisterRuntimeRegistrationHandler = async (model) => {
-		try {
-			const result = await unregisterRuntimeManagedModel(localStorage.token, model);
-			toast.success(
-				result?.removed_workspace_record
-					? $i18n.t('Runtime registration and model settings were removed')
-					: $i18n.t('Runtime registration removed')
-			);
-
-			page = 1;
-			await getModelList();
-		} catch (error) {
-			toast.error(`${error?.detail ?? error}`);
-		}
-
-		await _models.set(
-			await getModels(
-				localStorage.token,
-				directConnections(),
-				false,
-				true,
-				runtimeModelsEnabled()
+				$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
 			)
 		);
 	};
@@ -221,10 +185,7 @@
 		await _models.set(
 			await getModels(
 				localStorage.token,
-				directConnections(),
-				false,
-				false,
-				runtimeModelsEnabled()
+				$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
 			)
 		);
 	};
@@ -415,10 +376,7 @@
 					await _models.set(
 						await getModels(
 							localStorage.token,
-							directConnections(),
-							false,
-							false,
-							runtimeModelsEnabled()
+							$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
 						)
 					);
 
@@ -716,7 +674,6 @@
 																	user={$user}
 																	{model}
 																	writeAccess={model.write_access}
-																	runtimeManaged={runtimeModelsEnabled() && isDynamicRuntimeModel(model)}
 																	editHandler={() => {
 																		goto(
 																			`/workspace/models/edit?id=${encodeURIComponent(model.id)}`
@@ -739,9 +696,6 @@
 																	}}
 																	copyLinkHandler={() => {
 																		copyLinkHandler(model);
-																	}}
-																	runtimeUnregisterHandler={() => {
-																		unregisterRuntimeRegistrationHandler(model);
 																	}}
 																	deleteHandler={() => {
 																		selectedModel = model;
@@ -775,10 +729,8 @@
 																		_models.set(
 																			await getModels(
 																				localStorage.token,
-																				directConnections(),
-																				false,
-																				false,
-																				runtimeModelsEnabled()
+																				$config?.features?.enable_direct_connections &&
+																					($settings?.directConnections ?? null)
 																			)
 																		);
 																	}}

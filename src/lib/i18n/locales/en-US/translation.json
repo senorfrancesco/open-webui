@@ -2289,13 +2289,5 @@
 	"Your usage stats have been successfully synced.": "",
 	"YouTube": "",
 	"Youtube Language": "",
-	"Youtube Proxy URL": "",
-	"Loading model": "",
-	"Model load failed": "",
-	"Model load cancelled": "",
-	"Loading into memory": "",
-	"Starting runtime": "",
-	"Queued": "",
-	"Preparing model": "",
-	"Runtime model backend is unavailable": ""
+	"Youtube Proxy URL": ""
 }

@@ -1179,12 +1179,6 @@ ENABLE_BASE_MODELS_CACHE = PersistentConfig(
     os.environ.get('ENABLE_BASE_MODELS_CACHE', 'False').lower() == 'true',
 )
 
-ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS = PersistentConfig(
-    'ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS',
-    'agent_navigator.runtime_models.enabled',
-    os.environ.get('ENABLE_AGENT_NAVIGATOR_RUNTIME_MODELS', 'False').lower() == 'true',
-)
-
 
 ####################################
 # TOOL_SERVERS

@@ -13,31 +13,8 @@ from open_webui.utils.long_running_tools import (
 )
 
 
-@pytest.mark.parametrize(
-    ('tool_name', 'expected_message'),
-    [
-        (
-            'analyze_equipment_deep',
-            (
-                'Не удалось запустить инструмент глубокого анализа оборудования.\n'
-                'Инструмент не вернул подтверждение запуска (`job_id` и `status_url`). '
-                'Повторите запрос и проверьте, что инструмент включён в текущем чате.'
-            ),
-        ),
-        (
-            'analyze_document_deep',
-            (
-                'Не удалось запустить инструмент глубокого анализа документа.\n'
-                'Инструмент не вернул подтверждение запуска (`job_id` и `status_url`). '
-                'Повторите запрос и проверьте, что инструмент включён в текущем чате.'
-            ),
-        ),
-    ],
-)
-def test_detect_unconfirmed_long_running_launch_reports_empty_tool_result(
-    tool_name: str,
-    expected_message: str,
-):
+@pytest.mark.parametrize('tool_name', ['analyze_equipment_deep', 'analyze_document_deep'])
+def test_detect_unconfirmed_long_running_launch_reports_empty_tool_result(tool_name: str):
     launch_state = detect_unconfirmed_long_running_launch(
         [
             {
@@ -60,34 +37,11 @@ def test_detect_unconfirmed_long_running_launch_reports_empty_tool_result(
 
     assert launch_state is not None
     assert launch_state['call_id'] == 'call-long-1'
-    assert launch_state['message'] == expected_message
+    assert launch_state['message'] == LONG_RUNNING_TOOL_LAUNCH_ERROR
 
 
-@pytest.mark.parametrize(
-    ('tool_name', 'expected_message'),
-    [
-        (
-            'analyze_equipment_deep',
-            (
-                'Не удалось запустить инструмент глубокого анализа оборудования.\n'
-                'Инструмент не вернул подтверждение запуска (`job_id` и `status_url`). '
-                'Повторите запрос и проверьте, что инструмент включён в текущем чате.'
-            ),
-        ),
-        (
-            'analyze_document_deep',
-            (
-                'Не удалось запустить инструмент глубокого анализа документа.\n'
-                'Инструмент не вернул подтверждение запуска (`job_id` и `status_url`). '
-                'Повторите запрос и проверьте, что инструмент включён в текущем чате.'
-            ),
-        ),
-    ],
-)
-def test_detect_unconfirmed_long_running_output_reports_empty_function_output(
-    tool_name: str,
-    expected_message: str,
-):
+@pytest.mark.parametrize('tool_name', ['analyze_equipment_deep', 'analyze_document_deep'])
+def test_detect_unconfirmed_long_running_output_reports_empty_function_output(tool_name: str):
     launch_state = detect_unconfirmed_long_running_output(
         [
             {
@@ -106,27 +60,7 @@ def test_detect_unconfirmed_long_running_output_reports_empty_function_output(
 
     assert launch_state is not None
     assert launch_state['call_id'] == 'call-long-2'
-    assert launch_state['message'] == expected_message
-
-
-def test_detect_unconfirmed_long_running_output_uses_generic_fallback_for_unknown_tool():
-    launch_state = detect_unconfirmed_long_running_output(
-        [
-            {
-                'type': 'function_call',
-                'call_id': 'call-long-3',
-                'name': 'analyze_other_deep',
-                'arguments': '{}',
-            },
-            {
-                'type': 'function_call_output',
-                'call_id': 'call-long-3',
-                'output': '',
-            },
-        ]
-    )
-
-    assert launch_state is None
+    assert launch_state['message'] == LONG_RUNNING_TOOL_LAUNCH_ERROR
 
 
 def test_session_rag_handoff_annotation_and_prepare(monkeypatch):
@@ -143,20 +77,21 @@ def test_session_rag_handoff_annotation_and_prepare(monkeypatch):
     prepared = prepare_openai_form_data_for_session_rag_handoff(body)
 
     assert annotated['metadata']['llm_tools_platform_session_rag_handoff']['chat_id'] == 'chat-1'
-    assert prepared['model'] == 'raw.qwen-14b-llm'
+    assert prepared['model'] == 'llm-tools-platform'
     assert prepared['thread_id'] == 'chat-1'
     assert prepared['session_id'] == 'chat-1'
     assert prepared['files'][0]['id'] == 'file-1'
     assert prepared['openwebui_session_rag_handoff']['original_model'] == 'raw.qwen-14b-llm'
-    assert prepared['openwebui_session_rag_handoff']['routed_model'] == 'raw.qwen-14b-llm'
 
 
-def test_run_openai_with_session_rag_handoff_preferred_mode_preserves_selected_model(monkeypatch):
+def test_run_openai_with_session_rag_handoff_preferred_mode_falls_back(monkeypatch):
     monkeypatch.setenv('OPENWEBUI_SESSION_RAG_HANDOFF', 'preferred')
     models: list[str] = []
 
     async def invoke(payload):
         models.append(str(payload.get('model')))
+        if payload.get('model') == 'llm-tools-platform':
+            raise RuntimeError('wrapper unavailable')
         return {'ok': True, 'model': payload.get('model')}
 
     result = asyncio.run(
@@ -171,10 +106,10 @@ def test_run_openai_with_session_rag_handoff_preferred_mode_preserves_selected_m
     )
 
     assert result == {'ok': True, 'model': 'raw.qwen-14b-llm'}
-    assert models == ['raw.qwen-14b-llm']
+    assert models == ['llm-tools-platform', 'raw.qwen-14b-llm']
 
 
-def test_run_openai_with_session_rag_handoff_required_mode_keeps_original_model(monkeypatch):
+def test_run_openai_with_session_rag_handoff_required_mode_does_not_fallback(monkeypatch):
     monkeypatch.setenv('OPENWEBUI_SESSION_RAG_HANDOFF', 'required')
     models: list[str] = []
 
@@ -194,4 +129,4 @@ def test_run_openai_with_session_rag_handoff_required_mode_keeps_original_model(
             )
         )
 
-    assert models == ['raw.qwen-14b-llm']
+    assert models == ['llm-tools-platform']
