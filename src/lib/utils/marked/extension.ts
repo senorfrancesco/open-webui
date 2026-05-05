@@ -29,7 +29,7 @@ function parseAttributes(tag: string): { [key: string]: string } {
 function detailsTokenizer(src: string) {
 	// Updated regex to capture attributes inside <details>
 	const detailsRegex = /^<details(\s+[^>]*)?>\r?\n/;
-	const summaryRegex = /^<summary>(.*?)<\/summary>\r?\n/;
+	const summaryRegex = /^<summary>(.*?)<\/summary>\r?\n?/;
 
 	const detailsMatch = detailsRegex.exec(src);
 	if (detailsMatch) {
