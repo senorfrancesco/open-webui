@@ -886,34 +886,6 @@ export const loadRuntimeModel = async (token: string, modelId: string, deviceMod
 	return res;
 };
 
-export const stopRuntimeModel = async (token: string, modelId: string) => {
-	let error = null;
-
-	const res = await fetch(`${WEBUI_API_BASE_URL}/runtime-models/${encodeURIComponent(modelId)}/stop`, {
-		method: 'POST',
-		headers: {
-			Accept: 'application/json',
-			'Content-Type': 'application/json',
-			authorization: `Bearer ${token}`
-		}
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			error = err;
-			console.error(err);
-			return null;
-		});
-
-	if (error) {
-		throw error;
-	}
-
-	return res;
-};
-
 export const getRuntimeModelLoadJob = async (token: string, jobId: string) => {
 	let error = null;
 

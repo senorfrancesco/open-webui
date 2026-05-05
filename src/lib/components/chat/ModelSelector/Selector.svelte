@@ -438,7 +438,13 @@
 
 	const refreshModelsStore = async () => {
 		models.set(
-			await getModels(localStorage.token, directConnections(), false, true, runtimeModelsEnabled())
+			await getModels(
+				localStorage.token,
+				directConnections(),
+				false,
+				true,
+				runtimeModelsEnabled()
+			)
 		);
 	};
 
@@ -449,12 +455,11 @@
 		if (!runtimeModelsEnabled()) return false;
 
 		const meta = item?.model?.info?.meta ?? {};
-		const runtimeType =
-			`${meta.runtime_type ?? meta.runtime_registration?.runtime_type ?? ''}`.trim();
+		const runtimeType = `${meta.runtime_type ?? meta.runtime_registration?.runtime_type ?? ''}`.trim();
 		return Boolean(
 			runtimeType &&
-			['gguf', 'gguf-vl', 'st'].includes(runtimeType) &&
-			(meta.catalog_origin || meta.runtime_registration)
+				['gguf', 'gguf-vl', 'st'].includes(runtimeType) &&
+				(meta.catalog_origin || meta.runtime_registration)
 		);
 	};
 
@@ -466,46 +471,10 @@
 	};
 
 	const updateRuntimeLoadStore = (job: any, item: any) => {
-		const next = {
+		runtimeModelLoad.set({
 			...job,
 			display_name: item?.label ?? job?.model_id
-		};
-		const previous = $runtimeModelLoad;
-		const sameJob = Boolean(previous?.job_id && next?.job_id && previous.job_id === next.job_id);
-
-		if (sameJob && !runtimeLoadTerminalStates.has(next?.state)) {
-			const previousPercent = typeof previous?.percent === 'number' ? previous.percent : null;
-			const nextPercent = typeof next?.percent === 'number' ? next.percent : null;
-			if (previousPercent !== null || nextPercent !== null) {
-				next.percent = Math.min(99, Math.max(previousPercent ?? 0, nextPercent ?? 0));
-			}
-
-			const previousBytes =
-				typeof previous?.bytes_loaded === 'number' ? previous.bytes_loaded : null;
-			const nextBytes = typeof next?.bytes_loaded === 'number' ? next.bytes_loaded : null;
-			if (previousBytes !== null || nextBytes !== null) {
-				next.bytes_loaded = Math.max(previousBytes ?? 0, nextBytes ?? 0);
-			}
-
-			if (
-				(!next?.rate_bytes_per_sec || next.rate_bytes_per_sec <= 0) &&
-				previous?.rate_bytes_per_sec > 0
-			) {
-				next.rate_bytes_per_sec = previous.rate_bytes_per_sec;
-			}
-			if ((!next?.eta_seconds || next.eta_seconds <= 0) && previous?.eta_seconds > 0) {
-				next.eta_seconds = previous.eta_seconds;
-			}
-		}
-
-		if (next?.state === 'ready') {
-			next.percent = 100;
-			if (typeof next?.bytes_total === 'number' && next.bytes_total > 0) {
-				next.bytes_loaded = next.bytes_total;
-			}
-		}
-
-		runtimeModelLoad.set(next);
+		});
 	};
 
 	const pollRuntimeModelLoadJob = async (jobId: string, item: any, runId: number) => {

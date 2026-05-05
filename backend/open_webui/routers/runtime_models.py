@@ -136,18 +136,6 @@ async def load_runtime_model(
         _raise_proxy_http_error(exc)
 
 
-@router.post('/{model_id}/stop')
-async def stop_runtime_model(
-    model_id: str,
-    request: Request,
-    user=Depends(get_admin_user),
-):
-    try:
-        return await runtime_models_service.stop_model(request, model_id)
-    except runtime_models_service.RuntimeModelProxyError as exc:
-        _raise_proxy_http_error(exc)
-
-
 @router.get('/load-jobs/{job_id}')
 async def get_runtime_model_load_job(
     job_id: str,
