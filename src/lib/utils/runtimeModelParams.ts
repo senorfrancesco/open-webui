@@ -46,73 +46,12 @@ const resolveModelDisplayName = (catalog: any, modelId: string) => {
 	return model?.name ?? model?.display_name ?? modelId;
 };
 
-const normalizeNumber = (value: unknown) => {
-	if (typeof value !== 'number' || !Number.isFinite(value)) {
-		return null;
-	}
-	return Math.max(0, value);
-};
-
-export const normalizeRuntimeLoadProgress = (job: any) => {
-	const next = {
-		...(job ?? {})
-	};
-	const bytesTotal = normalizeNumber(next.bytes_total);
-	const bytesLoaded = normalizeNumber(next.bytes_loaded);
-	const processRssBytes = normalizeNumber(next.process_rss_bytes);
-
-	if (bytesTotal !== null) {
-		next.bytes_total = bytesTotal;
-	}
-	if (processRssBytes !== null) {
-		next.process_rss_bytes = processRssBytes;
-	}
-	if (bytesLoaded !== null) {
-		next.bytes_loaded = bytesTotal !== null && bytesTotal > 0 ? Math.min(bytesLoaded, bytesTotal) : bytesLoaded;
-	}
-
-	if (next?.state === 'ready') {
-		next.percent = 100;
-		if (bytesTotal !== null && bytesTotal > 0) {
-			next.bytes_loaded = bytesTotal;
-		}
-	} else {
-		const percent = normalizeNumber(next.percent);
-		if (percent !== null) {
-			next.percent = Math.min(99, percent);
-		}
-	}
-
-	return next;
-};
-
-export const resolveRuntimeInitialSelectedModels = ({
-	selectedModels,
-	activeRuntimeModelId,
-	availableModels,
-	hasExplicitSelection
-}: {
-	selectedModels: string[];
-	activeRuntimeModelId?: string | null;
-	availableModels: string[];
-	hasExplicitSelection: boolean;
-}) => {
-	const availableModelIds = new Set((availableModels ?? []).filter(Boolean));
-	const filteredSelectedModels = (selectedModels ?? []).filter((modelId) => availableModelIds.has(modelId));
-
-	if (!hasExplicitSelection && activeRuntimeModelId && availableModelIds.has(activeRuntimeModelId)) {
-		return [activeRuntimeModelId];
-	}
-
-	return filteredSelectedModels;
-};
-
 const mergeRuntimeLoadProgress = (job: any, displayName: string) => {
-	const previous = normalizeRuntimeLoadProgress(get(runtimeModelLoad));
-	let next = normalizeRuntimeLoadProgress({
+	const previous = get(runtimeModelLoad);
+	const next = {
 		...(job ?? {}),
 		display_name: displayName
-	});
+	};
 
 	if (previous?.job_id === next?.job_id) {
 		const previousPercent = typeof previous?.percent === 'number' ? previous.percent : null;
@@ -124,11 +63,7 @@ const mergeRuntimeLoadProgress = (job: any, displayName: string) => {
 		const previousBytes = typeof previous?.bytes_loaded === 'number' ? previous.bytes_loaded : null;
 		const nextBytes = typeof next?.bytes_loaded === 'number' ? next.bytes_loaded : null;
 		if (previousBytes !== null || nextBytes !== null) {
-			const mergedBytesLoaded = Math.max(previousBytes ?? 0, nextBytes ?? 0);
-			next.bytes_loaded =
-				typeof next?.bytes_total === 'number' && next.bytes_total > 0
-					? Math.min(mergedBytesLoaded, next.bytes_total)
-					: mergedBytesLoaded;
+			next.bytes_loaded = Math.max(previousBytes ?? 0, nextBytes ?? 0);
 		}
 
 		if (
@@ -142,7 +77,12 @@ const mergeRuntimeLoadProgress = (job: any, displayName: string) => {
 		}
 	}
 
-	next = normalizeRuntimeLoadProgress(next);
+	if (next?.state === 'ready') {
+		next.percent = 100;
+		if (typeof next?.bytes_total === 'number' && next.bytes_total > 0) {
+			next.bytes_loaded = next.bytes_total;
+		}
+	}
 
 	runtimeModelLoad.set(next);
 	return next;

@@ -93,9 +93,7 @@
 	import { uploadFile } from '$lib/apis/files';
 	import { createOpenAITextStream } from '$lib/apis/streaming';
 	import { getFunctions } from '$lib/apis/functions';
-	import { getRuntimeModelCatalog } from '$lib/apis/models';
 	import { updateFolderById } from '$lib/apis/folders';
-	import { resolveRuntimeInitialSelectedModels } from '$lib/utils/runtimeModelParams';
 	import {
 		cancelDeepJob,
 		getActiveDeepJob,
@@ -1680,19 +1678,8 @@
 			.map((m) => m.id);
 
 		const defaultModels = $config?.default_models ? $config?.default_models.split(',') : [];
-		let runtimeActiveModelId: string | null = null;
-		let hasExplicitModelSelection = false;
-		if ($config?.features?.enable_agent_navigator_runtime_models && localStorage.token) {
-			try {
-				const runtimeCatalog = await getRuntimeModelCatalog(localStorage.token);
-				runtimeActiveModelId = runtimeCatalog?.active_model_id ?? null;
-			} catch (error) {
-				console.warn('Runtime model catalog is not available during chat initialization.', error);
-			}
-		}
 
 		if ($page.url.searchParams.get('models') || $page.url.searchParams.get('model')) {
-			hasExplicitModelSelection = true;
 			const urlModels = (
 				$page.url.searchParams.get('models') ||
 				$page.url.searchParams.get('model') ||
@@ -1730,12 +1717,10 @@
 		} else {
 			if ($selectedFolder?.data?.model_ids) {
 				// Set from folder model IDs
-				hasExplicitModelSelection = true;
 				selectedModels = $selectedFolder?.data?.model_ids;
 			} else {
 				if (sessionStorage.selectedModels) {
 					// Set from session storage (temporary selection)
-					hasExplicitModelSelection = true;
 					selectedModels = JSON.parse(sessionStorage.selectedModels);
 					sessionStorage.removeItem('selectedModels');
 				} else {
@@ -1771,13 +1756,6 @@
 				selectedModels = [''];
 			}
 		}
-
-		selectedModels = resolveRuntimeInitialSelectedModels({
-			selectedModels,
-			activeRuntimeModelId: runtimeActiveModelId,
-			availableModels,
-			hasExplicitSelection: hasExplicitModelSelection
-		});
 
 		if ($mobile) {
 			await showControls.set(false);
