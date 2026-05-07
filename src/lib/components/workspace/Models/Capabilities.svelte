@@ -11,6 +11,12 @@
 			label: $i18n.t('Vision'),
 			description: $i18n.t('Model accepts image inputs')
 		},
+		media_attachments_to_tools: {
+			label: $i18n.t('Media Attachments to Tools'),
+			description: $i18n.t(
+				'Allow images and videos to be passed to selected tools instead of sending them directly to the model'
+			)
+		},
 		file_upload: {
 			label: $i18n.t('File Upload'),
 			description: $i18n.t('Model accepts file inputs')
@@ -62,6 +68,7 @@
 	export let capabilities: {
 		file_context?: boolean;
 		vision?: boolean;
+		media_attachments_to_tools?: boolean;
 		file_upload?: boolean;
 		web_search?: boolean;
 		image_generation?: boolean;

@@ -2663,9 +2663,14 @@
 					)
 				);
 
+				const routesMediaToTools =
+					model.info?.meta?.capabilities?.media_attachments_to_tools === true &&
+					selectedToolIds.length > 0;
+
 				if (
 					hasImages &&
 					!(model.info?.meta?.capabilities?.vision ?? true) &&
+					!routesMediaToTools &&
 					!imageGenerationEnabled
 				) {
 					toast.error(

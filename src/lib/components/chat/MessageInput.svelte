@@ -471,6 +471,18 @@
 		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.vision ?? true
 	);
 
+	let mediaAttachmentCapableModels = [];
+	$: mediaAttachmentCapableModels = (
+		atSelectedModel?.id ? [atSelectedModel.id] : selectedModels
+	).filter((model) => {
+		const capabilities = $models.find((m) => m.id === model)?.info?.meta?.capabilities ?? {};
+
+		return (
+			(capabilities.vision ?? true) ||
+			(capabilities.media_attachments_to_tools === true && selectedToolIds.length > 0)
+		);
+	});
+
 	let fileUploadCapableModels = [];
 	$: fileUploadCapableModels = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).filter(
 		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.file_upload ?? true
@@ -736,7 +748,7 @@
 			}
 
 			if (file['type'].startsWith('image/')) {
-				if (visionCapableModels.length === 0) {
+				if (mediaAttachmentCapableModels.length === 0) {
 					toast.error($i18n.t('Selected model(s) do not support image inputs'));
 					return;
 				}
@@ -1335,12 +1347,12 @@
 														alt=""
 														imageClassName=" size-10 rounded-xl object-cover"
 													/>
-													{#if atSelectedModel ? visionCapableModels.length === 0 : selectedModels.length !== visionCapableModels.length}
+													{#if atSelectedModel ? mediaAttachmentCapableModels.length === 0 : selectedModels.length !== mediaAttachmentCapableModels.length}
 														<Tooltip
 															className=" absolute top-1 left-1"
 															content={$i18n.t('{{ models }}', {
 																models: [...(atSelectedModel ? [atSelectedModel] : selectedModels)]
-																	.filter((id) => !visionCapableModels.includes(id))
+																	.filter((id) => !mediaAttachmentCapableModels.includes(id))
 																	.join(', ')
 															})}
 														>

@@ -2409,7 +2409,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             system_message = get_system_message(form_data.get('messages', []))
             form_data['messages'] = [system_message, *db_messages] if system_message else db_messages
 
-            # Inject image files into content as image_url parts (mirrors frontend logic)
+            capabilities = model.get('info', {}).get('meta', {}).get('capabilities', {})
+            model_accepts_vision = capabilities.get('vision', True)
+            route_media_to_tools = (
+                capabilities.get('media_attachments_to_tools') is True
+                and bool(form_data.get('tool_ids') or metadata.get('tool_ids'))
+            )
+
+            # Inject image files into content as image_url parts (mirrors frontend logic),
+            # unless a text-only model should route media attachments to tools via __files__.
             for message in form_data['messages']:
                 image_files = [
                     f
@@ -2419,18 +2427,33 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 if message.get('role') == 'user' and image_files:
                     text_content = message.get('content', '')
                     if isinstance(text_content, str):
-                        message['content'] = [
-                            {'type': 'text', 'text': text_content},
-                            *[
-                                {
-                                    'type': 'image_url',
-                                    'image_url': {'url': f['url']},
-                                }
-                                for f in image_files
-                                if f.get('url')
-                            ],
-                        ]
-                # Strip files field — it's been incorporated into content
+                        if model_accepts_vision or not route_media_to_tools:
+                            message['content'] = [
+                                {'type': 'text', 'text': text_content},
+                                *[
+                                    {
+                                        'type': 'image_url',
+                                        'image_url': {'url': f['url']},
+                                    }
+                                    for f in image_files
+                                    if f.get('url')
+                                ],
+                            ]
+                        else:
+                            media_lines = []
+                            for f in image_files:
+                                name = f.get('name') or f.get('filename') or f.get('id') or 'unnamed'
+                                content_type = f.get('content_type') or f.get('type') or 'unknown'
+                                media_lines.append(f'- name={name}, content_type={content_type}')
+
+                            if media_lines:
+                                message['content'] = (
+                                    f'{text_content}\n\n'
+                                    'К сообщению прикреплены медиафайлы, доступные инструментам:\n'
+                                    + '\n'.join(media_lines)
+                                )
+                # Strip files field before sending messages to the model. The canonical
+                # attachment list remains available to tools through metadata.files.
                 message.pop('files', None)
 
     # Process messages with OR-aligned output items for clean LLM messages
