@@ -155,6 +155,85 @@ def test_resolve_tool_server_connection_uses_local_fallback_when_config_missing(
     assert connection['config']['bootstrap_id'] == deep_jobs_service.BOOTSTRAP_CONNECTION_ID
 
 
+def test_resolve_tool_server_connection_ignores_model_manager_env(monkeypatch):
+    monkeypatch.delenv('LLM_TOOLS_PLATFORM_TOOL_SERVER_BASE_URL', raising=False)
+    monkeypatch.setenv('UMS_BASE_URL', 'http://ums-runtime:8090')
+    monkeypatch.setenv('MODEL_MANAGER_BASE_URL', 'http://model-manager:8090')
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    TOOL_SERVER_CONNECTIONS=[]
+                )
+            )
+        )
+    )
+
+    connection = deep_jobs_service.resolve_tool_server_connection(request)
+
+    assert connection['url'] == deep_jobs_service.DEFAULT_TOOL_SERVER_BASE_URL
+    assert '8090' not in connection['url']
+
+
+def test_cancel_deep_job_snapshot_proxies_tool_job_cancel(monkeypatch):
+    captured = {}
+
+    async def fake_request_tool_server_json(request, *, method, endpoint_path, payload=None):
+        captured['method'] = method
+        captured['endpoint_path'] = endpoint_path
+        captured['payload'] = payload
+        return {
+            'job_id': 'job-1',
+            'status': 'cancelled',
+        }
+
+    monkeypatch.setattr(deep_jobs_service, '_request_tool_server_json', fake_request_tool_server_json)
+
+    snapshot = asyncio.run(deep_jobs_service.cancel_deep_job_snapshot(SimpleNamespace(), 'job-1'))
+
+    assert captured == {
+        'method': 'POST',
+        'endpoint_path': '/tool-jobs/job-1/cancel',
+        'payload': None,
+    }
+    assert snapshot['job_id'] == 'job-1'
+    assert snapshot['state'] == 'cancelled'
+
+
+def test_deep_tools_only_fork_has_no_runtime_model_management_files():
+    repo_root = Path(__file__).resolve().parents[6]
+    forbidden_fragments = (
+        'runtime_models',
+        'RuntimeModelFolder',
+        'scan-jobs',
+        'scan-folders',
+        'browse-folders',
+        'recommended-folders',
+        'preview-path',
+        'models/register',
+    )
+
+    tracked_files = [
+        path.relative_to(repo_root).as_posix()
+        for path in repo_root.joinpath('backend').rglob('*')
+        if path.is_file() and '.pyc' not in path.suffixes
+    ]
+    tracked_files.extend(
+        path.relative_to(repo_root).as_posix()
+        for path in repo_root.joinpath('src').rglob('*')
+        if path.is_file()
+    )
+
+    matched = [
+        file_path
+        for file_path in tracked_files
+        if any(fragment in file_path for fragment in forbidden_fragments)
+    ]
+
+    assert matched == []
+
+
 def test_active_deep_job_route_returns_normalized_payload(monkeypatch):
     app = _build_app()
 
