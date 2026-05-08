@@ -2419,15 +2419,27 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             # Inject image files into content as image_url parts (mirrors frontend logic),
             # unless a text-only model should route media attachments to tools via __files__.
             for message in form_data['messages']:
-                image_files = [
+                media_files = [
                     f
                     for f in message.get('files', [])
-                    if f.get('type') == 'image' or (f.get('content_type') or '').startswith('image/')
+                    if (
+                        f.get('type') in {'image', 'video'}
+                        or (f.get('content_type') or '').startswith(('image/', 'video/'))
+                    )
                 ]
-                if message.get('role') == 'user' and image_files:
+                if message.get('role') == 'user' and media_files:
                     text_content = message.get('content', '')
                     if isinstance(text_content, str):
-                        if model_accepts_vision or not route_media_to_tools:
+                        image_files = [
+                            f
+                            for f in media_files
+                            if f.get('type') == 'image' or (f.get('content_type') or '').startswith('image/')
+                        ]
+                        has_video_files = any(
+                            f.get('type') == 'video' or (f.get('content_type') or '').startswith('video/')
+                            for f in media_files
+                        )
+                        if not route_media_to_tools or (model_accepts_vision and not has_video_files):
                             message['content'] = [
                                 {'type': 'text', 'text': text_content},
                                 *[
@@ -2441,7 +2453,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             ]
                         else:
                             media_lines = []
-                            for f in image_files:
+                            for f in media_files:
                                 name = f.get('name') or f.get('filename') or f.get('id') or 'unnamed'
                                 content_type = f.get('content_type') or f.get('type') or 'unknown'
                                 media_lines.append(f'- name={name}, content_type={content_type}')

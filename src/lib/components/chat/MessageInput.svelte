@@ -488,6 +488,18 @@
 		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.file_upload ?? true
 	);
 
+	const mediaAttachmentsRouteToTools = () => {
+		const modelIds = atSelectedModel?.id ? [atSelectedModel.id] : selectedModels;
+		return (
+			selectedToolIds.length > 0 &&
+			modelIds.length > 0 &&
+			modelIds.every((model) => {
+				const capabilities = $models.find((m) => m.id === model)?.info?.meta?.capabilities ?? {};
+				return capabilities.media_attachments_to_tools === true;
+			})
+		);
+	};
+
 	let webSearchCapableModels = [];
 	$: webSearchCapableModels = (atSelectedModel?.id ? [atSelectedModel.id] : selectedModels).filter(
 		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.web_search ?? true
@@ -814,6 +826,8 @@
 				};
 
 				reader.readAsDataURL(file['type'] === 'image/heic' ? await convertHeicToJpeg(file) : file);
+			} else if (file['type'].startsWith('video/') && mediaAttachmentsRouteToTools()) {
+				uploadFileHandler(file, false, { type: 'video' });
 			} else {
 				uploadFileHandler(file);
 			}
